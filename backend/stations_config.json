@@ -1,0 +1,163 @@
+{
+  "stations": [
+    {
+      "id": "42027",
+      "name": "Srinagar",
+      "state": "Jammu & Kashmir",
+      "region": "North",
+      "required_hours": [
+        "0000",
+        "0300",
+        "0600",
+        "0900",
+        "1200",
+        "1500",
+        "1800",
+        "2100"
+      ]
+    },
+    {
+      "id": "42056",
+      "name": "Jammu",
+      "state": "Jammu & Kashmir",
+      "region": "North",
+      "required_hours": [
+        "0000",
+        "0300",
+        "0600",
+        "0900",
+        "1200",
+        "1500",
+        "1800",
+        "2100"
+      ]
+    },
+    {
+      "id": "42045",
+      "name": "Banihal",
+      "state": "Jammu & Kashmir",
+      "region": "North",
+      "required_hours": [
+        "0000",
+        "0300",
+        "0600",
+        "0900",
+        "1200"
+      ]
+    },
+    {
+      "id": "42044",
+      "name": "Qazigund",
+      "state": "Jammu & Kashmir",
+      "region": "North",
+      "required_hours": [
+        "0000",
+        "0300",
+        "0600",
+        "0900",
+        "1200"
+      ]
+    },
+    {
+      "id": "42043",
+      "name": "Batote",
+      "state": "Jammu and Kashmir",
+      "region": "North",
+      "required_hours": [
+        "0000",
+        "0300",
+        "0600",
+        "0900",
+        "1200"
+      ]
+    },
+    {
+      "id": "42054",
+      "name": "Katra",
+      "state": "Jammu and Kashmir",
+      "region": "North",
+      "required_hours": [
+        "0000",
+        "0300",
+        "0600",
+        "0900",
+        "1200"
+      ]
+    },
+    {
+      "id": "42048",
+      "name": "Bhaderwah",
+      "state": "Jammu and Kashmir",
+      "region": "North",
+      "required_hours": [
+        "0000",
+        "0300",
+        "0600",
+        "0900",
+        "1200"
+      ]
+    },
+    {
+      "id": "42028",
+      "name": "Pahalgam",
+      "state": "Jammu and Kashmir",
+      "region": "North",
+      "required_hours": [
+        "0000",
+        "0300",
+        "0600",
+        "0900",
+        "1200"
+      ]
+    },
+    {
+      "id": "42031",
+      "name": "Kupwara",
+      "state": "Jammu and Kashmir",
+      "region": "North",
+      "required_hours": [
+        "0000",
+        "0300",
+        "0600",
+        "0900",
+        "1200"
+      ]
+    },
+    {
+      "id": "42046",
+      "name": "Banihal",
+      "state": "Jammu and Kashmir",
+      "region": "North",
+      "required_hours": [
+        "0000",
+        "0300",
+        "0600",
+        "0900",
+        "1200"
+      ]
+    },
+    {
+      "id": "42034",
+      "name": "Leh",
+      "state": "Jammu and Kashmir",
+      "region": "North",
+      "required_hours": [
+        "0000",
+        "0300",
+        "0600",
+        "0900",
+        "1200"
+      ]
+    },
+    {
+      "id": "42026",
+      "name": "Gulmarg",
+      "state": "Jammu & Kashmir",
+      "region": "North",
+      "required_hours": [
+        "0300",
+        "1200"
+      ]
+    }
+  ]
+}
