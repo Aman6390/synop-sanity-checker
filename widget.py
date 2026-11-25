@@ -169,8 +169,8 @@ class WidgetAPI:
         self.window: Optional[webview.Window] = None
         self.is_pinned: bool = True
         self.is_compact: bool = False
-        self.full_height: int = 500
-        self.compact_height: int = 120
+        self.full_height: int = 420
+        self.compact_height: int = 85
         self.width: int = 370
 
     def set_window(self, win: webview.Window):
@@ -375,9 +375,9 @@ WIDGET_HTML = """<!DOCTYPE html>
     border-color: rgba(239, 68, 68, 0.6);
   }
 
-  /* Live Clock & Window Bar */
+  /* Live Clock */
   .clock-section {
-    padding: 10px 14px 8px 14px;
+    padding: 10px 14px 10px 14px;
     background: rgba(255, 255, 255, 0.02);
     border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   }
@@ -401,82 +401,6 @@ WIDGET_HTML = """<!DOCTYPE html>
     font-weight: 600;
     color: var(--text-secondary);
   }
-
-  .window-badge-row {
-    margin-top: 6px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-
-  .window-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 3px 8px;
-    border-radius: 9999px;
-    font-size: 0.68rem;
-    font-weight: 600;
-    letter-spacing: 0.01em;
-  }
-
-  .window-pill.active {
-    background: rgba(16, 185, 129, 0.2);
-    color: #34D399;
-    border: 1px solid rgba(16, 185, 129, 0.35);
-  }
-
-  .window-pill.resting {
-    background: rgba(100, 116, 139, 0.2);
-    color: #94A3B8;
-    border: 1px solid rgba(100, 116, 139, 0.3);
-  }
-
-  .source-tag {
-    font-size: 0.65rem;
-    color: var(--text-muted);
-  }
-
-  /* Summary Metrics Strip */
-  .metrics-strip {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 6px;
-    padding: 8px 14px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  }
-
-  .metric-box {
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    border-radius: 10px;
-    padding: 6px 8px;
-    text-align: center;
-    transition: background 0.2s;
-  }
-
-  .metric-box:hover {
-    background: rgba(255, 255, 255, 0.06);
-  }
-
-  .metric-val {
-    font-size: 1.05rem;
-    font-weight: 700;
-    line-height: 1.1;
-  }
-
-  .metric-lbl {
-    font-size: 0.62rem;
-    color: var(--text-muted);
-    margin-top: 2px;
-    text-transform: uppercase;
-    letter-spacing: 0.02em;
-  }
-
-  .val-green { color: var(--accent-emerald); }
-  .val-amber { color: var(--accent-amber); }
-  .val-rose { color: var(--accent-rose); }
-  .val-white { color: #FFFFFF; }
 
   /* Station List View */
   .station-list {
@@ -660,7 +584,6 @@ WIDGET_HTML = """<!DOCTYPE html>
   }
 
   /* Compact Mode Adjustments */
-  body.compact-mode .metrics-strip,
   body.compact-mode .station-list,
   body.compact-mode .widget-footer {
     display: none !important;
@@ -689,31 +612,11 @@ WIDGET_HTML = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- Live Dual Clocks & Synoptic Window Status -->
+  <!-- Live Dual Clocks -->
   <div class="clock-section">
     <div class="clock-row">
       <span class="clock-utc" id="clockUtc">--:--:-- UTC</span>
       <span class="clock-ist" id="clockIst">--:--:-- IST</span>
-    </div>
-    <div class="window-badge-row">
-      <span class="window-pill resting" id="windowBadge">Idle Window</span>
-      <span class="source-tag" id="sourceTag">AMSS Live</span>
-    </div>
-  </div>
-
-  <!-- Metrics Strip -->
-  <div class="metrics-strip">
-    <div class="metric-box">
-      <div class="metric-val val-white" id="mTotal">12</div>
-      <div class="metric-lbl">Stations</div>
-    </div>
-    <div class="metric-box">
-      <div class="metric-val val-green" id="mOnTime">0</div>
-      <div class="metric-lbl">On-Time</div>
-    </div>
-    <div class="metric-box">
-      <div class="metric-val val-rose" id="mLateAlerts">0</div>
-      <div class="metric-lbl">Alerts</div>
     </div>
   </div>
 
@@ -760,32 +663,10 @@ WIDGET_HTML = """<!DOCTYPE html>
   setInterval(updateClocks, 1000);
   updateClocks();
 
-  // Render stations and KPI data
+  // Render station observations
   function renderData(data) {
     if (!data || !data.success) return;
     lastData = data;
-
-    // Window badge
-    const winBadge = document.getElementById('windowBadge');
-    if (data.window_status && data.window_status.is_active) {
-      winBadge.className = 'window-pill active';
-      winBadge.innerText = `● ${data.window_status.status_text}`;
-    } else {
-      winBadge.className = 'window-pill resting';
-      winBadge.innerText = data.window_status ? data.window_status.status_text : 'Idle Window';
-    }
-
-    // Source
-    document.getElementById('sourceTag').innerText = data.source ? data.source.replace(' (AMSS Backup)', '') : 'AMSS';
-
-    // Metrics
-    const m = data.metrics || {};
-    document.getElementById('mTotal').innerText = m.total_stations || (data.stations ? data.stations.length : 0);
-    document.getElementById('mOnTime').innerText = m.on_time_slots || 0;
-    const alertCount = (m.late_slots || 0) + (m.missing_slots || 0);
-    const alertEl = document.getElementById('mLateAlerts');
-    alertEl.innerText = alertCount;
-    alertEl.className = alertCount > 0 ? 'metric-val val-rose' : 'metric-val val-green';
 
     // Station list
     const listEl = document.getElementById('stationList');
@@ -917,7 +798,7 @@ def main():
 
     # Position in the bottom-right corner, 20px margin from screen edges
     widget_w = 370
-    widget_h = 500
+    widget_h = 420
     pos_x = max(20, screen_width - widget_w - 24)
     pos_y = max(20, screen_height - widget_h - 54)
 
