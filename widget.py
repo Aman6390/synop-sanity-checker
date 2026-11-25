@@ -622,40 +622,51 @@ WIDGET_HTML = """<!DOCTYPE html>
     to { background-color: rgba(239, 68, 68, 0.4); }
   }
 
-  /* Matrix Column Header */
+  /* Status Legend Header (replaces table column header for Box Grid) */
   .matrix-header {
     display: flex;
     align-items: center;
-    padding: 4px 10px 3px 10px;
-    background: rgba(0, 0, 0, 0.2);
+    justify-content: space-between;
+    padding: 5px 10px;
+    background: rgba(0, 0, 0, 0.22);
     border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     font-size: 0.58rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    font-weight: 600;
     color: var(--text-muted);
   }
 
-  .col-st-title {
-    width: 118px;
+  .legend-title {
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #CBD5E1;
+  }
+
+  .legend-pills {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 8px;
   }
 
-  .col-cycles-header {
-    flex: 1;
+  .legend-item {
     display: flex;
-    justify-content: space-between;
-    padding-right: 2px;
+    align-items: center;
+    gap: 3px;
+    font-size: 0.57rem;
+    color: #CBD5E1;
   }
 
-  .cycle-col-name {
-    width: 20px;
-    text-align: center;
-    font-family: monospace;
-    font-size: 0.60rem;
+  .legend-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    display: inline-block;
   }
+
+  .dot-ok { background: #10B981; box-shadow: 0 0 5px rgba(16, 185, 129, 0.6); }
+  .dot-early { background: #EAB308; box-shadow: 0 0 5px rgba(234, 179, 8, 0.6); }
+  .dot-late { background: #F97316; box-shadow: 0 0 5px rgba(249, 115, 22, 0.6); }
+  .dot-missing { background: #EF4444; box-shadow: 0 0 5px rgba(239, 68, 68, 0.6); }
 
   /* View Container (Matrix, Drilldown, Settings) */
   .view-panel {
@@ -666,136 +677,157 @@ WIDGET_HTML = """<!DOCTYPE html>
     position: relative;
   }
 
-  /* Matrix Station Rows (Zero Scrolling, Super Compact) */
+  /* Box-Type 3x4 Grid (Zero Scrolling, All 12 Stations Visible) */
   .matrix-body {
     flex: 1;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-auto-rows: 1fr;
+    gap: 6px;
+    padding: 7px 8px;
+    overflow: hidden;
+  }
+
+  .station-box {
     display: flex;
     flex-direction: column;
     justify-content: space-between;
-    padding: 3px 6px;
-    overflow: hidden;
-  }
-
-  .station-row {
-    display: flex;
-    align-items: center;
-    padding: 3px 6px;
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.02);
-    border: 1px solid transparent;
+    padding: 6px 7px;
+    border-radius: 10px;
     cursor: pointer;
-    transition: all 0.12s var(--spring-easing);
-  }
-
-  .station-row:hover {
-    background: rgba(255, 255, 255, 0.08);
-    border-color: rgba(255, 255, 255, 0.14);
-    transform: translateX(2px);
-  }
-
-  .station-row.has-alert {
-    border-color: rgba(239, 68, 68, 0.4);
-    background: rgba(239, 68, 68, 0.08);
-  }
-
-  .st-info {
-    width: 114px;
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    white-space: nowrap;
+    position: relative;
     overflow: hidden;
+    transition: transform 0.16s var(--spring-easing), box-shadow 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+    backdrop-filter: blur(8px);
   }
 
-  .st-code {
-    font-family: monospace;
-    font-size: 0.65rem;
-    font-weight: 600;
-    color: var(--accent-sky);
-    background: rgba(56, 189, 248, 0.12);
-    padding: 1px 3px;
-    border-radius: 3px;
-    line-height: 1.1;
-  }
-
-  .st-name {
-    font-size: 0.70rem;
-    font-weight: 600;
-    color: #FFFFFF;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .cycles-cells {
-    flex: 1;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-
-  .cell-pill {
-    width: 20px;
-    height: 17px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 4px;
-    font-family: "SF Mono", Monaco, monospace;
-    font-size: 0.55rem;
-    font-weight: 700;
-    transition: transform 0.1s;
-  }
-
-  .cell-pill:hover {
-    transform: scale(1.2);
+  .station-box:hover {
+    transform: translateY(-2px) scale(1.02);
     z-index: 2;
   }
 
-  .cell-on-time {
-    background: #10B981;
+  .station-box:active {
+    transform: scale(0.98);
+  }
+
+  /* Green: Everything OK */
+  .station-box.box-ok {
+    background: linear-gradient(145deg, rgba(16, 185, 129, 0.24), rgba(5, 150, 105, 0.12));
+    border: 1px solid rgba(16, 185, 129, 0.52);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 2px 8px rgba(16, 185, 129, 0.12);
+  }
+  .station-box.box-ok:hover {
+    border-color: rgba(52, 211, 153, 0.85);
+    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.28);
+  }
+
+  /* Yellow: Early Synop */
+  .station-box.box-early {
+    background: linear-gradient(145deg, rgba(234, 179, 8, 0.26), rgba(161, 98, 7, 0.14));
+    border: 1px solid rgba(234, 179, 8, 0.65);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 2px 8px rgba(234, 179, 8, 0.15);
+  }
+  .station-box.box-early:hover {
+    border-color: rgba(250, 204, 21, 0.9);
+    box-shadow: 0 4px 12px rgba(234, 179, 8, 0.30);
+  }
+
+  /* Orange: Late Synop */
+  .station-box.box-late {
+    background: linear-gradient(145deg, rgba(249, 115, 22, 0.28), rgba(194, 65, 12, 0.15));
+    border: 1px solid rgba(249, 115, 22, 0.70);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 2px 8px rgba(249, 115, 22, 0.18);
+  }
+  .station-box.box-late:hover {
+    border-color: rgba(251, 146, 60, 0.95);
+    box-shadow: 0 4px 12px rgba(249, 115, 22, 0.35);
+  }
+
+  /* Red: Missing Synop */
+  .station-box.box-missing {
+    background: linear-gradient(145deg, rgba(239, 68, 68, 0.30), rgba(185, 28, 28, 0.16));
+    border: 1px solid rgba(239, 68, 68, 0.75);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 2px 10px rgba(239, 68, 68, 0.22);
+  }
+  .station-box.box-missing:hover {
+    border-color: rgba(248, 113, 113, 0.95);
+    box-shadow: 0 4px 14px rgba(239, 68, 68, 0.40);
+  }
+
+  .box-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 3px;
+  }
+
+  .box-id {
+    font-family: "SF Mono", Monaco, monospace;
+    font-size: 0.58rem;
+    font-weight: 700;
+    color: rgba(255, 255, 255, 0.85);
+    background: rgba(0, 0, 0, 0.26);
+    padding: 1px 4px;
+    border-radius: 4px;
+    line-height: 1.15;
+  }
+
+  .box-status-tag {
+    font-size: 0.52rem;
+    font-weight: 800;
+    letter-spacing: 0.03em;
+    padding: 1px 4px;
+    border-radius: 4px;
+    text-transform: uppercase;
+  }
+
+  .tag-ok { background: rgba(16, 185, 129, 0.35); color: #A7F3D0; }
+  .tag-early { background: rgba(234, 179, 8, 0.35); color: #FEF08A; }
+  .tag-late { background: rgba(249, 115, 22, 0.38); color: #FED7AA; }
+  .tag-missing { background: rgba(239, 68, 68, 0.40); color: #FECACA; }
+
+  .box-name {
+    font-size: 0.72rem;
+    font-weight: 700;
     color: #FFFFFF;
-    box-shadow: 0 0 5px rgba(16, 185, 129, 0.35);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin: 2px 0;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
   }
 
-  .cell-late {
-    background: #F59E0B;
-    color: #FFFFFF;
-    box-shadow: 0 0 6px rgba(245, 158, 11, 0.4);
+  .box-bottom {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 4px;
   }
 
-  .cell-missing {
-    background: #EF4444;
-    color: #FFFFFF;
-    box-shadow: 0 0 6px rgba(239, 68, 68, 0.5);
+  .box-dots {
+    display: flex;
+    align-items: center;
+    gap: 2px;
   }
 
-  .cell-early {
-    background: #0284C7;
-    color: #FFFFFF;
+  .mini-slot {
+    width: 5px;
+    height: 5px;
+    border-radius: 2px;
   }
 
-  .cell-awaiting {
-    background: rgba(100, 116, 139, 0.15);
-    color: #64748B;
-    border: 1px dashed rgba(100, 116, 139, 0.35);
-  }
+  .ms-on-time { background: #34D399; }
+  .ms-early { background: #FACC15; }
+  .ms-late { background: #FB923C; }
+  .ms-missing { background: #F87171; }
+  .ms-awaiting { background: rgba(255, 255, 255, 0.22); }
+  .ms-not-scheduled { background: rgba(255, 255, 255, 0.08); }
 
-  .cell-not-scheduled {
-    background: transparent;
-    color: #334155;
-    border: 1px solid rgba(255, 255, 255, 0.04);
-  }
-
-  .row-chevron {
-    color: var(--text-muted);
-    font-size: 0.60rem;
-    margin-left: 3px;
-    opacity: 0.4;
-  }
-
-  .station-row:hover .row-chevron {
-    opacity: 1;
-    color: var(--accent-sky);
+  .box-count {
+    font-family: "SF Mono", Monaco, monospace;
+    font-size: 0.54rem;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.75);
   }
 
   /* Footer Action Bar */
@@ -964,10 +996,41 @@ WIDGET_HTML = """<!DOCTYPE html>
     border-radius: 9999px;
   }
 
-  .badge-on-time { background: rgba(16, 185, 129, 0.15); color: #34D399; border: 1px solid rgba(16, 185, 129, 0.3); }
-  .badge-late { background: rgba(245, 158, 11, 0.2); color: #FBBF24; border: 1px solid rgba(245, 158, 11, 0.4); }
-  .badge-missing { background: rgba(239, 68, 68, 0.2); color: #F87171; border: 1px solid rgba(239, 68, 68, 0.4); }
-  .badge-awaiting { background: rgba(100, 116, 139, 0.2); color: #94A3B8; }
+  .badge-on-time { background: rgba(16, 185, 129, 0.18); color: #34D399; border: 1px solid rgba(16, 185, 129, 0.35); }
+  .badge-early { background: rgba(234, 179, 8, 0.20); color: #FACC15; border: 1px solid rgba(234, 179, 8, 0.45); }
+  .badge-late { background: rgba(249, 115, 22, 0.20); color: #FB923C; border: 1px solid rgba(249, 115, 22, 0.45); }
+  .badge-missing { background: rgba(239, 68, 68, 0.22); color: #F87171; border: 1px solid rgba(239, 68, 68, 0.45); }
+  .badge-awaiting { background: rgba(100, 116, 139, 0.2); color: #94A3B8; border: 1px solid rgba(100, 116, 139, 0.25); }
+
+  .drilldown-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 5px 10px;
+    background: rgba(0, 0, 0, 0.22);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    font-size: 0.58rem;
+    color: var(--text-muted);
+  }
+
+  .dd-stat-chips {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .dd-chip {
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-weight: 700;
+    font-size: 0.56rem;
+  }
+
+  .feed-card.card-ok { border-left: 3px solid #10B981; }
+  .feed-card.card-early { border-left: 3px solid #EAB308; }
+  .feed-card.card-late { border-left: 3px solid #F97316; }
+  .feed-card.card-missing { border-left: 3px solid #EF4444; }
+  .feed-card.card-awaiting { border-left: 3px solid #64748B; }
 
   .feed-meta-row {
     display: flex;
@@ -1213,23 +1276,19 @@ WIDGET_HTML = """<!DOCTYPE html>
     <span>Inspect ›</span>
   </div>
 
-  <!-- 1. ZERO-SCROLL MATRIX VIEW -->
+  <!-- 1. ZERO-SCROLL BOX GRID VIEW -->
   <div class="view-panel" id="viewMatrix">
     <div class="matrix-header">
-      <span class="col-st-title">Station (12)</span>
-      <div class="col-cycles-header">
-        <span class="cycle-col-name">00</span>
-        <span class="cycle-col-name">03</span>
-        <span class="cycle-col-name">06</span>
-        <span class="cycle-col-name">09</span>
-        <span class="cycle-col-name">12</span>
-        <span class="cycle-col-name">15</span>
-        <span class="cycle-col-name">18</span>
-        <span class="cycle-col-name">21</span>
+      <span class="legend-title">Stations (12)</span>
+      <div class="legend-pills" id="legendCounts">
+        <span class="legend-item"><span class="legend-dot dot-ok"></span>OK</span>
+        <span class="legend-item"><span class="legend-dot dot-early"></span>Early</span>
+        <span class="legend-item"><span class="legend-dot dot-late"></span>Late</span>
+        <span class="legend-item"><span class="legend-dot dot-missing"></span>Miss</span>
       </div>
     </div>
     <div class="matrix-body" id="matrixRows">
-      <div style="text-align: center; color: var(--text-muted); padding: 40px; font-size: 0.75rem;">
+      <div style="grid-column: 1 / -1; text-align: center; color: var(--text-muted); padding: 40px; font-size: 0.75rem;">
         Ingesting bulletins...
       </div>
     </div>
@@ -1242,7 +1301,7 @@ WIDGET_HTML = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- 2. STATION DRILL-DOWN VIEW (Reverse Chronological Synop Feed) -->
+  <!-- 2. STATION DRILL-DOWN VIEW (All Relevant Information + Reverse Chronological Feed) -->
   <div class="view-panel drilldown-view" id="viewDrilldown">
     <div class="drilldown-header">
       <button class="btn-back" onclick="closeDrilldown()">‹ All Stations</button>
@@ -1252,6 +1311,7 @@ WIDGET_HTML = """<!DOCTYPE html>
       </div>
       <span class="feed-status-badge badge-on-time" id="ddStBadge">ALL NORMAL</span>
     </div>
+    <div class="drilldown-summary" id="ddSummaryBar"></div>
     <div class="drilldown-feed" id="drilldownFeed"></div>
     <div class="widget-footer">
       <button class="btn-dashboard" onclick="copyLatestSynop()">
@@ -1455,47 +1515,84 @@ WIDGET_HTML = """<!DOCTYPE html>
       banner.classList.remove('show');
     }
 
-    // Render Matrix Rows
+    // Render Station Boxes (3x4 Grid)
     const rowsEl = document.getElementById('matrixRows');
     if (!data.stations || data.stations.length === 0) {
-      rowsEl.innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 30px;">No station data available.</div>';
+      rowsEl.innerHTML = '<div style="grid-column: 1 / -1; text-align: center; color: var(--text-muted); padding: 30px;">No station data available.</div>';
       return;
     }
 
-    let rowsHtml = '';
+    let okStations = 0, earlyStations = 0, lateStations = 0, missingStations = 0;
+    let boxesHtml = '';
+
     data.stations.forEach(st => {
-      const hasLate = (st.slots || []).some(s => s.status === 'LATE' || s.status === 'VERY_LATE' || s.status === 'MISSING');
-      const rowAlertCls = hasLate ? 'has-alert' : '';
+      const slots = st.slots || [];
+      let onTimeCount = 0, earlyCount = 0, lateCount = 0, missingCount = 0, expectedCount = 0;
+      let dotsHtml = '';
 
-      let cellsHtml = '';
-      (st.slots || []).forEach(slot => {
-        let pillCls = 'cell-awaiting';
-        let pillText = slot.hour.slice(0, 2);
+      slots.forEach(slot => {
+        let dotCls = 'ms-awaiting';
+        if (slot.status === 'ON_TIME') { onTimeCount++; expectedCount++; dotCls = 'ms-on-time'; }
+        else if (slot.status === 'EARLY') { earlyCount++; expectedCount++; dotCls = 'ms-early'; }
+        else if (slot.status === 'LATE' || slot.status === 'VERY_LATE') { lateCount++; expectedCount++; dotCls = 'ms-late'; }
+        else if (slot.status === 'MISSING') { missingCount++; expectedCount++; dotCls = 'ms-missing'; }
+        else if (slot.status === 'NOT_SCHEDULED') { dotCls = 'ms-not-scheduled'; }
 
-        if (slot.status === 'ON_TIME') { pillCls = 'cell-on-time'; pillText = '✓'; }
-        else if (slot.status === 'LATE' || slot.status === 'VERY_LATE') { pillCls = 'cell-late'; pillText = '⚠️'; }
-        else if (slot.status === 'MISSING') { pillCls = 'cell-missing'; pillText = '✕'; }
-        else if (slot.status === 'EARLY') { pillCls = 'cell-early'; pillText = 'E'; }
-        else if (slot.status === 'NOT_SCHEDULED') { pillCls = 'cell-not-scheduled'; pillText = '-'; }
-
-        cellsHtml += `<span class="cell-pill ${pillCls}" title="${slot.hour.slice(0,2)}Z: ${slot.badge_text}">${pillText}</span>`;
+        dotsHtml += `<span class="mini-slot ${dotCls}" title="${slot.hour.slice(0,2)}Z: ${slot.badge_text}"></span>`;
       });
 
-      rowsHtml += `
-        <div class="station-row ${rowAlertCls}" onclick="openDrilldown('${st.id}')">
-          <div class="st-info">
-            <span class="st-code">${st.id}</span>
-            <span class="st-name" title="${st.name}">${st.name}</span>
+      let boxCls = 'box-ok';
+      let tagCls = 'tag-ok';
+      let tagText = 'OK';
+
+      if (missingCount > 0) {
+        boxCls = 'box-missing';
+        tagCls = 'tag-missing';
+        tagText = `${missingCount} MISS`;
+        missingStations++;
+      } else if (lateCount > 0) {
+        boxCls = 'box-late';
+        tagCls = 'tag-late';
+        tagText = `${lateCount} LATE`;
+        lateStations++;
+      } else if (earlyCount > 0) {
+        boxCls = 'box-early';
+        tagCls = 'tag-early';
+        tagText = `${earlyCount} EARLY`;
+        earlyStations++;
+      } else {
+        okStations++;
+      }
+
+      const receivedTotal = onTimeCount + earlyCount + lateCount;
+      const countText = expectedCount > 0 ? `${receivedTotal}/${expectedCount}` : '0/0';
+
+      boxesHtml += `
+        <div class="station-box ${boxCls}" onclick="openDrilldown('${st.id}')" title="${st.name} (${st.id}) - Click for details">
+          <div class="box-top">
+            <span class="box-id">${st.id}</span>
+            <span class="box-status-tag ${tagCls}">${tagText}</span>
           </div>
-          <div class="cycles-cells">
-            ${cellsHtml}
+          <div class="box-name">${st.name}</div>
+          <div class="box-bottom">
+            <div class="box-dots">${dotsHtml}</div>
+            <span class="box-count">${countText}</span>
           </div>
-          <span class="row-chevron">›</span>
         </div>
       `;
     });
 
-    rowsEl.innerHTML = rowsHtml;
+    rowsEl.innerHTML = boxesHtml;
+
+    const legendEl = document.getElementById('legendCounts');
+    if (legendEl) {
+      legendEl.innerHTML = `
+        <span class="legend-item"><span class="legend-dot dot-ok"></span>${okStations} OK</span>
+        <span class="legend-item"><span class="legend-dot dot-early"></span>${earlyStations} Early</span>
+        <span class="legend-item"><span class="legend-dot dot-late"></span>${lateStations} Late</span>
+        <span class="legend-item"><span class="legend-dot dot-missing"></span>${missingStations} Miss</span>
+      `;
+    }
 
     // Refresh drilldown if active
     if (activeDrilldownId) {
@@ -1512,6 +1609,8 @@ WIDGET_HTML = """<!DOCTYPE html>
     document.getElementById('viewMatrix').style.display = 'none';
     document.getElementById('viewSettings').style.display = 'none';
     document.getElementById('viewDrilldown').style.display = 'flex';
+    const feedEl = document.getElementById('drilldownFeed');
+    if (feedEl) feedEl.scrollTop = 0;
   }
 
   function closeDrilldown() {
@@ -1532,29 +1631,65 @@ WIDGET_HTML = """<!DOCTYPE html>
     const st = lastData.stations.find(s => String(s.id) === String(stationId));
     if (!st) return;
 
+    const slots = st.slots || [];
+    let onTimeCount = 0, earlyCount = 0, lateCount = 0, missingCount = 0;
+    slots.forEach(slot => {
+      if (slot.status === 'ON_TIME') onTimeCount++;
+      else if (slot.status === 'EARLY') earlyCount++;
+      else if (slot.status === 'LATE' || slot.status === 'VERY_LATE') lateCount++;
+      else if (slot.status === 'MISSING') missingCount++;
+    });
+
     document.getElementById('ddStCode').innerText = st.id;
     document.getElementById('ddStName').innerText = st.name;
+
     const badgeEl = document.getElementById('ddStBadge');
-    badgeEl.innerText = st.overall_status.replace(/_/g, ' ');
-    badgeEl.className = st.overall_status === 'ALL_NORMAL' ? 'feed-status-badge badge-on-time' : 'feed-status-badge badge-late';
+    if (missingCount > 0) {
+      badgeEl.innerText = `${missingCount} MISSING`;
+      badgeEl.className = 'feed-status-badge badge-missing';
+    } else if (lateCount > 0) {
+      badgeEl.innerText = `${lateCount} LATE`;
+      badgeEl.className = 'feed-status-badge badge-late';
+    } else if (earlyCount > 0) {
+      badgeEl.innerText = `${earlyCount} EARLY`;
+      badgeEl.className = 'feed-status-badge badge-early';
+    } else {
+      badgeEl.innerText = 'ALL NORMAL';
+      badgeEl.className = 'feed-status-badge badge-on-time';
+    }
+
+    const summaryEl = document.getElementById('ddSummaryBar');
+    if (summaryEl) {
+      summaryEl.innerHTML = `
+        <div class="dd-stat-chips">
+          <span class="dd-chip badge-on-time">${onTimeCount} OK</span>
+          <span class="dd-chip badge-early">${earlyCount} Early</span>
+          <span class="dd-chip badge-late">${lateCount} Late</span>
+          <span class="dd-chip badge-missing">${missingCount} Miss</span>
+        </div>
+        <span>${lastData.source || 'Live'}</span>
+      `;
+    }
 
     const feedEl = document.getElementById('drilldownFeed');
     let feedHtml = '';
 
     // Reverse chronological order: 21Z -> 18Z -> 15Z -> 12Z -> 09Z -> 06Z -> 03Z -> 00Z
-    const reversedSlots = [...(st.slots || [])].reverse();
+    const reversedSlots = [...slots].reverse();
 
     reversedSlots.forEach(slot => {
       let badgeClass = 'badge-awaiting';
-      if (slot.status === 'ON_TIME') badgeClass = 'badge-on-time';
-      else if (slot.status === 'LATE' || slot.status === 'VERY_LATE') badgeClass = 'badge-late';
-      else if (slot.status === 'MISSING') badgeClass = 'badge-missing';
+      let cardClass = 'card-awaiting';
+      if (slot.status === 'ON_TIME') { badgeClass = 'badge-on-time'; cardClass = 'card-ok'; }
+      else if (slot.status === 'EARLY') { badgeClass = 'badge-early'; cardClass = 'card-early'; }
+      else if (slot.status === 'LATE' || slot.status === 'VERY_LATE') { badgeClass = 'badge-late'; cardClass = 'card-late'; }
+      else if (slot.status === 'MISSING') { badgeClass = 'badge-missing'; cardClass = 'card-missing'; }
 
       const transLabel = slot.duplicate_badge || (slot.transmission_count > 1 ? `Collective Echo (${slot.transmission_count})` : 'Single Transmission');
       const rawSynop = slot.raw_synop || (slot.received ? 'SYNOP received but text unavailable.' : 'Pending observation window.');
 
       feedHtml += `
-        <div class="feed-card">
+        <div class="feed-card ${cardClass}">
           <div class="feed-card-top">
             <div class="feed-obs-time">
               <span class="feed-hour-chip">${slot.label}</span>
