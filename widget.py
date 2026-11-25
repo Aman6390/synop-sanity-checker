@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import sys
 import json
+import base64
 import socket
 import logging
 import threading
@@ -25,6 +26,7 @@ from ctypes import windll, wintypes
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Any, Optional
 
+import requests
 import webview
 
 # Ensure backend directory is in path and support PyInstaller frozen bundles
@@ -52,16 +54,20 @@ from sla_engine import (
 DEFAULT_CONFIG_PATH = os.path.join(BACKEND_DIR, "stations_config.json")
 
 
-def get_user_config_path() -> str:
+def get_app_data_file(filename: str) -> str:
     app_data = os.environ.get("APPDATA")
     if app_data:
         user_dir = os.path.join(app_data, "IMD_SYNOP")
         try:
             os.makedirs(user_dir, exist_ok=True)
-            return os.path.join(user_dir, "stations_config.json")
+            return os.path.join(user_dir, filename)
         except Exception:
             pass
-    return os.path.join(EXE_DIR, "stations_config.json")
+    return os.path.join(EXE_DIR, filename)
+
+
+def get_user_config_path() -> str:
+    return get_app_data_file("stations_config.json")
 
 
 def get_dump_path() -> str:
@@ -87,14 +93,305 @@ def is_port_active(port: int, host: str = "127.0.0.1") -> bool:
         return False
 
 
+DEFAULT_POLLING_SETTINGS = {
+    "mode": "dynamic",               # "dynamic" or "fixed"
+    "window_before_mins": 15,        # start expecting N mins before synoptic hour
+    "window_after_mins": 30,         # end expectation N mins after synoptic hour
+    "active_interval_secs": 60,      # poll interval during expectation window
+    "idle_interval_secs": 900,       # poll interval outside window / after late cutoff
+    "fixed_interval_secs": 60,       # poll interval when mode == "fixed"
+    "early_exit_on_complete": True,  # drop to idle as soon as all stations report
+}
+
+DEFAULT_SYNC_CONFIG = {
+    "enabled": True,
+    "read_url": "https://raw.githubusercontent.com/Aman6390/synop-sanity-checker/main/shared_timestamps.json",
+    "publish_url": "",               # Optional HTTP POST webhook or GitHub Contents API URL
+    "publish_token": "",             # Optional Bearer / GitHub PAT (stored locally only)
+    "auto_publish": True,
+}
+
+
+class TimestampSyncManager:
+    """
+    Records exact UTC first-seen timestamps when SYNOPs appear on AMSS,
+    merges with a shared public JSON feed, and optionally publishes updates
+    so all users of the software share past arrival timings.
+    """
+
+    def __init__(self):
+        self.cache_path = get_app_data_file("seen_timestamps.json")
+        self.config_path = get_app_data_file("sync_config.json")
+        self.timestamps: Dict[str, Dict[str, Any]] = {}
+        self.last_remote_fetch: Optional[datetime] = None
+        self._lock = threading.Lock()
+        self._load_cache()
+
+    def load_config(self) -> Dict[str, Any]:
+        cfg = dict(DEFAULT_SYNC_CONFIG)
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path, "r", encoding="utf-8") as f:
+                    cfg.update(json.load(f))
+            except Exception as e:
+                logger.warning(f"Failed loading sync config: {e}")
+        return cfg
+
+    def save_config(self, new_cfg: Dict[str, Any]) -> Dict[str, Any]:
+        cfg = self.load_config()
+        for k in DEFAULT_SYNC_CONFIG:
+            if k in new_cfg:
+                cfg[k] = new_cfg[k]
+        try:
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed saving sync config: {e}")
+        return cfg
+
+    def _load_cache(self) -> None:
+        if os.path.exists(self.cache_path):
+            try:
+                with open(self.cache_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self.timestamps = data.get("station_timestamps", {})
+            except Exception as e:
+                logger.warning(f"Failed loading timestamp cache: {e}")
+
+    def _save_cache(self) -> None:
+        try:
+            payload = self.build_payload()
+            with open(self.cache_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed saving timestamp cache: {e}")
+
+    def prune_old(self, now_utc: datetime) -> None:
+        cutoff = now_utc - timedelta(hours=48)
+        to_del = []
+        for k, v in self.timestamps.items():
+            try:
+                dt = datetime.fromisoformat(v.get("first_seen_utc", ""))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                if dt < cutoff:
+                    to_del.append(k)
+            except Exception:
+                to_del.append(k)
+        for k in to_del:
+            del self.timestamps[k]
+
+    def build_payload(self) -> Dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "updated_utc": datetime.now(timezone.utc).isoformat(),
+            "station_timestamps": self.timestamps,
+        }
+
+    def fetch_remote(self, force: bool = False) -> None:
+        cfg = self.load_config()
+        if not cfg.get("enabled") or not cfg.get("read_url"):
+            return
+        now_utc = datetime.now(timezone.utc)
+        if not force and self.last_remote_fetch and (now_utc - self.last_remote_fetch).total_seconds() < 45:
+            return
+        try:
+            resp = requests.get(cfg["read_url"], timeout=4)
+            if resp.status_code == 200:
+                remote_data = resp.json()
+                remote_ts = remote_data.get("station_timestamps", {})
+                with self._lock:
+                    for k, v in remote_ts.items():
+                        if k not in self.timestamps:
+                            self.timestamps[k] = v
+                self.last_remote_fetch = now_utc
+        except Exception as e:
+            logger.debug(f"Remote timestamp fetch skipped: {e}")
+
+    def record_if_live(self, station_id: str, date_str: str, hour: str, slot_time: datetime, now_utc: datetime) -> Optional[Dict[str, Any]]:
+        key = f"{station_id}_{date_str}_{hour}"
+        with self._lock:
+            if key in self.timestamps:
+                return self.timestamps[key]
+            # Only stamp live arrival if now_utc is within [-45m, +120m] of slot_time
+            delta_mins = (now_utc - slot_time).total_seconds() / 60.0
+            if -45 <= delta_mins <= 120:
+                entry = {
+                    "station_id": str(station_id),
+                    "date_utc": date_str,
+                    "hour": hour,
+                    "first_seen_utc": now_utc.isoformat(),
+                    "delta_minutes": round(delta_mins, 1),
+                    "source": "amss_live_seen",
+                }
+                self.timestamps[key] = entry
+                return entry
+        return None
+
+    def get_entry(self, station_id: str, date_str: str, hour: str) -> Optional[Dict[str, Any]]:
+        key = f"{station_id}_{date_str}_{hour}"
+        return self.timestamps.get(key)
+
+    def publish_async(self) -> None:
+        cfg = self.load_config()
+        pub_url = (cfg.get("publish_url") or "").strip()
+        if not cfg.get("enabled") or not pub_url:
+            return
+
+        def _worker():
+            try:
+                payload = self.build_payload()
+                token = (cfg.get("publish_token") or "").strip()
+                headers = {"Content-Type": "application/json"}
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+
+                # Support GitHub Contents API PUT (api.github.com/repos/.../contents/...)
+                if "api.github.com/repos/" in pub_url and "/contents/" in pub_url:
+                    sha = None
+                    get_r = requests.get(pub_url, headers=headers, timeout=5)
+                    if get_r.status_code == 200:
+                        sha = get_r.json().get("sha")
+                    content_b64 = base64.b64encode(json.dumps(payload, indent=2).encode("utf-8")).decode("ascii")
+                    body = {
+                        "message": f"Update shared SYNOP timestamps ({payload['updated_utc']})",
+                        "content": content_b64,
+                    }
+                    if sha:
+                        body["sha"] = sha
+                    requests.put(pub_url, headers=headers, json=body, timeout=6)
+                else:
+                    requests.post(pub_url, headers=headers, json=payload, timeout=5)
+            except Exception as e:
+                logger.warning(f"Timestamp publish failed: {e}")
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+
 class WidgetBackend:
-    """Manages cached data fetching, parsing, and SLA engine analysis for the widget."""
+    """Manages cached data fetching, parsing, dynamic polling, and SLA engine analysis."""
 
     def __init__(self):
         self.cached_data: Optional[Dict[str, Any]] = None
         self.last_fetch_time: Optional[datetime] = None
         self.last_source: str = "Uninitialized"
         self.fetcher = AMSSFetcher()
+        self.sync_mgr = TimestampSyncManager()
+        self.polling_cfg_path = get_app_data_file("polling_settings.json")
+
+    def load_polling_settings(self) -> Dict[str, Any]:
+        cfg = dict(DEFAULT_POLLING_SETTINGS)
+        if os.path.exists(self.polling_cfg_path):
+            try:
+                with open(self.polling_cfg_path, "r", encoding="utf-8") as f:
+                    cfg.update(json.load(f))
+            except Exception as e:
+                logger.warning(f"Failed loading polling settings: {e}")
+        return cfg
+
+    def save_polling_settings(self, new_cfg: Dict[str, Any]) -> Dict[str, Any]:
+        cfg = self.load_polling_settings()
+        for k in DEFAULT_POLLING_SETTINGS:
+            if k in new_cfg:
+                cfg[k] = new_cfg[k]
+        try:
+            with open(self.polling_cfg_path, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed saving polling settings: {e}")
+        return cfg
+
+    def compute_dynamic_window(
+        self,
+        now_utc: datetime,
+        settings: Dict[str, Any],
+        evaluated_stations: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        before_m = int(settings.get("window_before_mins", 15))
+        after_m = int(settings.get("window_after_mins", 30))
+        active_secs = max(15, int(settings.get("active_interval_secs", 60)))
+        idle_secs = max(60, int(settings.get("idle_interval_secs", 900)))
+        fixed_secs = max(15, int(settings.get("fixed_interval_secs", 60)))
+        mode = settings.get("mode", "dynamic")
+        early_exit = bool(settings.get("early_exit_on_complete", True))
+
+        synoptic_hours = [0, 3, 6, 9, 12, 15, 18, 21]
+        candidates = []
+        for day_offset in [-1, 0, 1]:
+            base_date = (now_utc + timedelta(days=day_offset)).date()
+            for h in synoptic_hours:
+                obs_dt = datetime(base_date.year, base_date.month, base_date.day, h, 0, tzinfo=timezone.utc)
+                w_start = obs_dt - timedelta(minutes=before_m)
+                w_end = obs_dt + timedelta(minutes=after_m)
+                candidates.append((obs_dt, w_start, w_end, f"{h:02d}00", f"{h:02d}Z"))
+
+        in_expectation = False
+        active_cycle_str = ""
+        active_hour_key = ""
+        mins_left = 0
+
+        for obs_dt, w_start, w_end, h_key, h_lbl in candidates:
+            if w_start <= now_utc <= w_end:
+                in_expectation = True
+                active_cycle_str = h_lbl
+                active_hour_key = h_key
+                mins_left = max(0, int((w_end - now_utc).total_seconds() / 60))
+                break
+
+        # Check if all stations requiring the active hour have already reported
+        all_complete = False
+        if in_expectation and evaluated_stations:
+            required_for_cycle = []
+            for st in evaluated_stations:
+                slot = next((sl for sl in st.get("slots", []) if sl.get("hour") == active_hour_key), None)
+                if slot and slot.get("status") != "NOT_SCHEDULED":
+                    required_for_cycle.append(slot.get("received", False))
+            if required_for_cycle and all(required_for_cycle):
+                all_complete = True
+
+        if mode == "fixed":
+            return {
+                "mode": "fixed",
+                "is_active": in_expectation,
+                "is_expectation_window": in_expectation,
+                "all_complete": all_complete,
+                "cycle": active_cycle_str or "Fixed",
+                "target_poll_seconds": fixed_secs,
+                "status_text": f"Fixed Poll ({fixed_secs}s)" + (f" · {active_cycle_str}" if in_expectation else ""),
+            }
+
+        if in_expectation:
+            if early_exit and all_complete:
+                return {
+                    "mode": "dynamic",
+                    "is_active": False,
+                    "is_expectation_window": False,
+                    "all_complete": True,
+                    "cycle": active_cycle_str,
+                    "target_poll_seconds": idle_secs,
+                    "status_text": f"{active_cycle_str} Complete · Idle",
+                }
+            return {
+                "mode": "dynamic",
+                "is_active": True,
+                "is_expectation_window": True,
+                "all_complete": False,
+                "cycle": active_cycle_str,
+                "target_poll_seconds": active_secs,
+                "status_text": f"Expecting {active_cycle_str} ({mins_left}m left)",
+            }
+
+        future_windows = [c for c in candidates if c[1] > now_utc]
+        next_label = min(future_windows, key=lambda x: x[1])[4] if future_windows else "00Z"
+        return {
+            "mode": "dynamic",
+            "is_active": False,
+            "is_expectation_window": False,
+            "all_complete": False,
+            "cycle": next_label,
+            "target_poll_seconds": idle_secs,
+            "status_text": f"Idle · Next {next_label}",
+        }
 
     def load_stations_config(self) -> List[Dict[str, Any]]:
         target_path = CONFIG_PATH if os.path.exists(CONFIG_PATH) else DEFAULT_CONFIG_PATH
@@ -152,8 +449,14 @@ class WidgetBackend:
         if raw_text:
             parsed = GTSParser.parse_bulletin_stream(raw_text)
             now_utc = datetime.now(timezone.utc)
-            window_status = get_synoptic_window_status(now_utc)
+            date_str = now_utc.strftime("%Y-%m-%d")
+            polling_settings = self.load_polling_settings()
             stations = self.load_stations_config()
+
+            # Sync remote shared timestamps & prune old >48h entries
+            self.sync_mgr.fetch_remote()
+            self.sync_mgr.prune_old(now_utc)
+            new_timestamps_recorded = False
 
             evaluated_stations = []
             total_on_time = 0
@@ -173,7 +476,27 @@ class WidgetBackend:
                     slot = eval_res["slots"].get(h, {})
                     slot_status = slot.get("status", "NOT_SCHEDULED")
                     badge_text = slot.get("badge_text", "-")
-                    
+                    is_received = slot.get("received", False)
+
+                    # Record or lookup shared first-seen timestamp
+                    slot_dt = now_utc.replace(hour=int(h[:2]), minute=0, second=0, microsecond=0)
+                    ts_entry = self.sync_mgr.get_entry(st_id, date_str, h)
+                    if is_received and source == "AMSS Delhi Live" and not ts_entry:
+                        recorded = self.sync_mgr.record_if_live(st_id, date_str, h, slot_dt, now_utc)
+                        if recorded:
+                            ts_entry = recorded
+                            new_timestamps_recorded = True
+
+                    first_seen_time = ""
+                    first_seen_delta = None
+                    if ts_entry and ts_entry.get("first_seen_utc"):
+                        try:
+                            fs_dt = datetime.fromisoformat(ts_entry["first_seen_utc"])
+                            first_seen_time = fs_dt.strftime("%H:%M:%S UTC")
+                            first_seen_delta = ts_entry.get("delta_minutes")
+                        except Exception:
+                            pass
+
                     # Capture late / missing alerts
                     if slot_status in ("LATE", "VERY_LATE", "MISSING"):
                         late_alerts.append({
@@ -205,12 +528,14 @@ class WidgetBackend:
                         "status": slot_status,
                         "severity": slot.get("severity", "muted"),
                         "badge_text": badge_text,
-                        "received": slot.get("received", False),
+                        "received": is_received,
                         "transmission_count": slot.get("transmission_count", 0),
                         "duplicate_type": slot.get("duplicate_type", "NONE"),
                         "duplicate_badge": slot.get("duplicate_badge", ""),
                         "delta_minutes": slot.get("delta_minutes"),
                         "filing_time": filing_time,
+                        "first_seen_time": first_seen_time,
+                        "first_seen_delta": first_seen_delta,
                         "raw_synop": slot.get("authoritative_synop", {}).get("raw_text", "") or (slot.get("primary_report", {}) or {}).get("raw_text", ""),
                         "reports": reports_list
                     })
@@ -231,15 +556,32 @@ class WidgetBackend:
                     "slots": slots_data,
                 })
 
+            if new_timestamps_recorded:
+                self.sync_mgr._save_cache()
+                sync_cfg = self.sync_mgr.load_config()
+                if sync_cfg.get("auto_publish", True):
+                    self.sync_mgr.publish_async()
+
+            window_status = self.compute_dynamic_window(now_utc, polling_settings, evaluated_stations)
             self.last_fetch_time = now_utc
             self.last_source = source
 
+            sync_cfg = self.sync_mgr.load_config()
             self.cached_data = {
                 "success": True,
                 "source": source,
                 "total_bulletins": parsed.get("total_bulletins", 0),
                 "last_fetch_iso": now_utc.isoformat(),
                 "window_status": window_status,
+                "polling_settings": polling_settings,
+                "sync_info": {
+                    "enabled": sync_cfg.get("enabled", True),
+                    "read_url": sync_cfg.get("read_url", ""),
+                    "publish_url": sync_cfg.get("publish_url", ""),
+                    "has_token": bool(sync_cfg.get("publish_token")),
+                    "auto_publish": sync_cfg.get("auto_publish", True),
+                    "recorded_count": len(self.sync_mgr.timestamps),
+                },
                 "late_alerts": late_alerts,
                 "metrics": {
                     "total_stations": len(stations),
@@ -344,6 +686,54 @@ class WidgetAPI:
         except Exception as e:
             logger.error(f"Error in reorder_stations: {e}")
             return False
+
+    def save_polling_settings(self, settings_json: str) -> str:
+        """Persists user-configured dynamic/fixed polling parameters."""
+        try:
+            parsed = json.loads(settings_json)
+            saved = backend_instance.save_polling_settings(parsed)
+            return json.dumps({"success": True, "settings": saved})
+        except Exception as e:
+            logger.error(f"Error saving polling settings: {e}")
+            return json.dumps({"success": False, "error": str(e)})
+
+    def save_sync_config(self, sync_json: str) -> str:
+        """Persists shared timestamp sync URL and optional publish settings."""
+        try:
+            parsed = json.loads(sync_json)
+            saved = backend_instance.sync_mgr.save_config(parsed)
+            return json.dumps({"success": True, "enabled": saved.get("enabled", True)})
+        except Exception as e:
+            logger.error(f"Error saving sync config: {e}")
+            return json.dumps({"success": False, "error": str(e)})
+
+    def export_timestamps_json(self) -> str:
+        """Exports all recorded SYNOP arrival timestamps to shared_timestamps.json next to executable."""
+        try:
+            payload = backend_instance.sync_mgr.build_payload()
+            out_path = os.path.join(EXE_DIR, "shared_timestamps.json")
+            with open(out_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+            return json.dumps({
+                "success": True,
+                "path": out_path,
+                "count": len(payload.get("station_timestamps", {})),
+                "json_text": json.dumps(payload, indent=2),
+            })
+        except Exception as e:
+            logger.error(f"Error exporting timestamps JSON: {e}")
+            return json.dumps({"success": False, "error": str(e)})
+
+    def push_timestamps_now(self) -> str:
+        """Manually triggers publishing timestamps JSON to the configured publish URL."""
+        try:
+            cfg = backend_instance.sync_mgr.load_config()
+            if not (cfg.get("publish_url") or "").strip():
+                return json.dumps({"success": False, "error": "No Publish URL configured in Settings."})
+            backend_instance.sync_mgr.publish_async()
+            return json.dumps({"success": True})
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)})
 
     def toggle_pin(self) -> bool:
         """Toggles always-on-top behavior asynchronously without blocking the UI thread."""
@@ -627,6 +1017,73 @@ WIDGET_HTML = """<!DOCTYPE html>
     padding: 1px 5px;
     border-radius: 4px;
     border: 1px solid rgba(56, 189, 248, 0.2);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .active-poll-spinner {
+    display: none;
+    width: 9px;
+    height: 9px;
+    border: 1.5px solid rgba(56, 189, 248, 0.28);
+    border-top-color: #38BDF8;
+    border-radius: 50%;
+    animation: spin 1.1s linear infinite;
+  }
+
+  .active-poll-spinner.active {
+    display: inline-block;
+  }
+
+  .active-poll-spinner.fetching {
+    display: inline-block;
+    border-top-color: #10B981;
+    animation: spin 0.45s linear infinite;
+  }
+
+  .setting-subgrid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    margin-top: 6px;
+  }
+
+  .setting-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .setting-field label {
+    font-size: 0.58rem;
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+
+  .setting-select, .setting-input {
+    width: 100%;
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    color: #F8FAFC;
+    border-radius: 5px;
+    padding: 3px 5px;
+    font-size: 0.62rem;
+    outline: none;
+  }
+
+  .setting-select:focus, .setting-input:focus {
+    border-color: var(--accent-sky);
+  }
+
+  .setting-check-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 0.62rem;
+    color: var(--text-secondary);
+    margin-top: 6px;
+    cursor: pointer;
   }
 
   /* Active Alert Banner */
@@ -1297,7 +1754,10 @@ WIDGET_HTML = """<!DOCTYPE html>
     <span class="clock-utc" id="clockUtc">--:--:-- UTC</span>
     <div class="clock-right">
       <span class="clock-ist" id="clockIst">--:--:-- IST</span>
-      <span class="scan-pill" id="scanCountdown" title="Current Scan Timing">Scan: 1m</span>
+      <span class="scan-pill" title="Dynamic Polling Status">
+        <span class="active-poll-spinner" id="activePollSpinner" title="Synop Expectation Period Active"></span>
+        <span id="scanCountdown">Scan: 1m</span>
+      </span>
     </div>
   </div>
 
@@ -1372,18 +1832,102 @@ WIDGET_HTML = """<!DOCTYPE html>
       <input type="range" class="opacity-slider" id="opacitySlider" min="30" max="100" value="88" oninput="changeOpacity(this.value)">
     </div>
 
-    <!-- Scan Timing Changer -->
+    <!-- Dynamic Polling & Window Controls -->
     <div class="setting-group">
       <div class="setting-label-row">
-        <span>Scan Frequency</span>
-        <span class="setting-val-tag" id="timingVal">1m</span>
+        <span>Polling Mode & Timing</span>
+        <span class="setting-val-tag" id="timingVal">Dynamic</span>
       </div>
-      <div class="timing-buttons">
-        <div class="btn-timing" onclick="changeScanTiming(30, '30s')">30s</div>
-        <div class="btn-timing active" onclick="changeScanTiming(60, '1m')">1m</div>
-        <div class="btn-timing" onclick="changeScanTiming(120, '2m')">2m</div>
-        <div class="btn-timing" onclick="changeScanTiming(300, '5m')">5m</div>
-        <div class="btn-timing" onclick="changeScanTiming(600, '10m')">10m</div>
+      <div class="timing-buttons" style="margin-bottom: 6px;">
+        <div class="btn-timing active" id="modeDynamicBtn" onclick="setPollingMode('dynamic')">⚡ Auto Dynamic</div>
+        <div class="btn-timing" id="modeFixedBtn" onclick="setPollingMode('fixed')">⏱️ Fixed</div>
+      </div>
+
+      <div id="dynamicControls">
+        <div class="setting-subgrid">
+          <div class="setting-field">
+            <label>Window Start (Before)</label>
+            <select class="setting-select" id="cfgBeforeMins" onchange="applyPollingSettings()">
+              <option value="0">0m (At Synop)</option>
+              <option value="5">-5m before</option>
+              <option value="10">-10m before</option>
+              <option value="15" selected>-15m before</option>
+              <option value="30">-30m before</option>
+            </select>
+          </div>
+          <div class="setting-field">
+            <label>Window End (After)</label>
+            <select class="setting-select" id="cfgAfterMins" onchange="applyPollingSettings()">
+              <option value="15">+15m after</option>
+              <option value="20">+20m after</option>
+              <option value="30" selected>+30m after</option>
+              <option value="45">+45m after</option>
+              <option value="60">+60m after</option>
+            </select>
+          </div>
+          <div class="setting-field">
+            <label>Active Window Poll</label>
+            <select class="setting-select" id="cfgActiveSecs" onchange="applyPollingSettings()">
+              <option value="30">Every 30s</option>
+              <option value="60" selected>Every 60s</option>
+              <option value="90">Every 90s</option>
+              <option value="120">Every 2m</option>
+            </select>
+          </div>
+          <div class="setting-field">
+            <label>Idle / Post-Late Poll</label>
+            <select class="setting-select" id="cfgIdleSecs" onchange="applyPollingSettings()">
+              <option value="300">Every 5m</option>
+              <option value="600">Every 10m</option>
+              <option value="900" selected>Every 15m</option>
+              <option value="1800">Every 30m</option>
+              <option value="3600">Every 60m</option>
+            </select>
+          </div>
+        </div>
+        <label class="setting-check-row">
+          <span>Early-exit when all stations report</span>
+          <input type="checkbox" id="cfgEarlyExit" checked onchange="applyPollingSettings()">
+        </label>
+      </div>
+
+      <div id="fixedControls" style="display: none;">
+        <div class="timing-buttons">
+          <div class="btn-timing" onclick="changeFixedTiming(30, '30s')">30s</div>
+          <div class="btn-timing active" onclick="changeFixedTiming(60, '1m')">1m</div>
+          <div class="btn-timing" onclick="changeFixedTiming(120, '2m')">2m</div>
+          <div class="btn-timing" onclick="changeFixedTiming(300, '5m')">5m</div>
+          <div class="btn-timing" onclick="changeFixedTiming(600, '10m')">10m</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Shared Timestamps JSON Sync -->
+    <div class="setting-group">
+      <div class="setting-label-row">
+        <span>Shared Timestamps JSON</span>
+        <span class="setting-val-tag" id="syncCountTag">0 saved</span>
+      </div>
+      <label class="setting-check-row" style="margin-top: 0; margin-bottom: 5px;">
+        <span>Sync past arrival timings via JSON</span>
+        <input type="checkbox" id="cfgSyncEnabled" checked onchange="applySyncConfig()">
+      </label>
+      <div class="setting-field" style="margin-bottom: 4px;">
+        <label>Shared Feed URL (Read)</label>
+        <input type="text" class="setting-input" id="cfgReadUrl" placeholder="https://raw.githubusercontent.com/.../shared_timestamps.json">
+      </div>
+      <div class="setting-field" style="margin-bottom: 4px;">
+        <label>Publish URL (Optional POST / GitHub API)</label>
+        <input type="text" class="setting-input" id="cfgPublishUrl" placeholder="Optional webhook or GitHub contents API URL">
+      </div>
+      <div class="setting-field" style="margin-bottom: 5px;">
+        <label>Auth Token (Optional, local only)</label>
+        <input type="password" class="setting-input" id="cfgPublishToken" placeholder="Leave blank if public/unauthenticated">
+      </div>
+      <div style="display: flex; gap: 4px;">
+        <button class="btn-sort" style="flex: 1;" onclick="applySyncConfig(true)">💾 Save Sync</button>
+        <button class="btn-sort" style="flex: 1;" onclick="exportTimestampsJson()">📤 Export JSON</button>
+        <button class="btn-sort" style="flex: 1;" onclick="pushTimestampsNow()">☁️ Push Now</button>
       </div>
     </div>
 
@@ -1549,16 +2093,131 @@ WIDGET_HTML = """<!DOCTYPE html>
   }
 
   // --------------------------------------------------------------------------
-  // Scan Timing Interval Changer
+  // Dynamic Polling & Shared Timestamp Sync Controls
   // --------------------------------------------------------------------------
-  function changeScanTiming(secs, label) {
-    currentScanSecs = secs;
-    scanRemainingSecs = secs;
-    document.getElementById('timingVal').innerText = label;
-    document.querySelectorAll('.btn-timing').forEach(b => {
+  let currentPollingMode = 'dynamic';
+
+  function hydratePollingAndSyncUI(data) {
+    const ps = data.polling_settings || {};
+    currentPollingMode = ps.mode || 'dynamic';
+    document.getElementById('modeDynamicBtn').classList.toggle('active', currentPollingMode === 'dynamic');
+    document.getElementById('modeFixedBtn').classList.toggle('active', currentPollingMode === 'fixed');
+    document.getElementById('dynamicControls').style.display = currentPollingMode === 'dynamic' ? 'block' : 'none';
+    document.getElementById('fixedControls').style.display = currentPollingMode === 'fixed' ? 'block' : 'none';
+
+    if (ps.window_before_mins !== undefined) document.getElementById('cfgBeforeMins').value = String(ps.window_before_mins);
+    if (ps.window_after_mins !== undefined) document.getElementById('cfgAfterMins').value = String(ps.window_after_mins);
+    if (ps.active_interval_secs !== undefined) document.getElementById('cfgActiveSecs').value = String(ps.active_interval_secs);
+    if (ps.idle_interval_secs !== undefined) document.getElementById('cfgIdleSecs').value = String(ps.idle_interval_secs);
+    if (ps.early_exit_on_complete !== undefined) document.getElementById('cfgEarlyExit').checked = Boolean(ps.early_exit_on_complete);
+
+    const fixedSecs = ps.fixed_interval_secs || 60;
+    const fixedLbl = fixedSecs < 60 ? `${fixedSecs}s` : `${Math.floor(fixedSecs/60)}m`;
+    document.querySelectorAll('#fixedControls .btn-timing').forEach(b => {
+      b.classList.toggle('active', b.innerText === fixedLbl);
+    });
+
+    const ws = data.window_status || {};
+    const targetSecs = ws.target_poll_seconds || 60;
+    if (currentScanSecs !== targetSecs) {
+      currentScanSecs = targetSecs;
+      if (scanRemainingSecs > targetSecs) scanRemainingSecs = targetSecs;
+    }
+
+    const timingTag = document.getElementById('timingVal');
+    if (timingTag) {
+      timingTag.innerText = ws.status_text || (currentPollingMode === 'dynamic' ? 'Dynamic' : fixedLbl);
+    }
+
+    // Top-right spinner during expectation period
+    const spinner = document.getElementById('activePollSpinner');
+    if (spinner) {
+      spinner.classList.toggle('active', Boolean(ws.is_expectation_window));
+      spinner.title = ws.status_text || 'Dynamic Polling Status';
+    }
+
+    // Hydrate Sync Info
+    const si = data.sync_info || {};
+    if (document.getElementById('cfgSyncEnabled')) {
+      document.getElementById('cfgSyncEnabled').checked = Boolean(si.enabled !== false);
+      if (si.read_url !== undefined) document.getElementById('cfgReadUrl').value = si.read_url || '';
+      if (si.publish_url !== undefined) document.getElementById('cfgPublishUrl').value = si.publish_url || '';
+      document.getElementById('syncCountTag').innerText = `${si.recorded_count || 0} saved`;
+    }
+  }
+
+  function setPollingMode(mode) {
+    currentPollingMode = mode;
+    document.getElementById('modeDynamicBtn').classList.toggle('active', mode === 'dynamic');
+    document.getElementById('modeFixedBtn').classList.toggle('active', mode === 'fixed');
+    document.getElementById('dynamicControls').style.display = mode === 'dynamic' ? 'block' : 'none';
+    document.getElementById('fixedControls').style.display = mode === 'fixed' ? 'block' : 'none';
+    applyPollingSettings();
+  }
+
+  async function applyPollingSettings() {
+    const payload = {
+      mode: currentPollingMode,
+      window_before_mins: parseInt(document.getElementById('cfgBeforeMins').value, 10),
+      window_after_mins: parseInt(document.getElementById('cfgAfterMins').value, 10),
+      active_interval_secs: parseInt(document.getElementById('cfgActiveSecs').value, 10),
+      idle_interval_secs: parseInt(document.getElementById('cfgIdleSecs').value, 10),
+      early_exit_on_complete: document.getElementById('cfgEarlyExit').checked,
+    };
+    if (window.pywebview && window.pywebview.api) {
+      await window.pywebview.api.save_polling_settings(JSON.stringify(payload));
+      triggerRefresh();
+    }
+  }
+
+  async function changeFixedTiming(secs, label) {
+    document.querySelectorAll('#fixedControls .btn-timing').forEach(b => {
       b.classList.toggle('active', b.innerText === label);
     });
-    localStorage.setItem('synop_scan_timing', secs);
+    currentScanSecs = secs;
+    scanRemainingSecs = secs;
+    if (window.pywebview && window.pywebview.api) {
+      await window.pywebview.api.save_polling_settings(JSON.stringify({ mode: 'fixed', fixed_interval_secs: secs }));
+      triggerRefresh();
+    }
+  }
+
+  async function applySyncConfig(showAlert) {
+    const payload = {
+      enabled: document.getElementById('cfgSyncEnabled').checked,
+      read_url: document.getElementById('cfgReadUrl').value.trim(),
+      publish_url: document.getElementById('cfgPublishUrl').value.trim(),
+    };
+    const tok = document.getElementById('cfgPublishToken').value.trim();
+    if (tok) payload.publish_token = tok;
+    if (window.pywebview && window.pywebview.api) {
+      await window.pywebview.api.save_sync_config(JSON.stringify(payload));
+      if (showAlert) alert('Sync settings saved!');
+      triggerRefresh();
+    }
+  }
+
+  async function exportTimestampsJson() {
+    if (window.pywebview && window.pywebview.api) {
+      const res = JSON.parse(await window.pywebview.api.export_timestamps_json());
+      if (res.success) {
+        try { await navigator.clipboard.writeText(res.json_text); } catch(e) {}
+        alert(`Exported ${res.count} timestamps to:\n${res.path}\n(Also copied to clipboard!)`);
+      } else {
+        alert('Export failed: ' + (res.error || 'Unknown error'));
+      }
+    }
+  }
+
+  async function pushTimestampsNow() {
+    if (window.pywebview && window.pywebview.api) {
+      const res = JSON.parse(await window.pywebview.api.push_timestamps_now());
+      if (res.success) {
+        alert('Publishing timestamps JSON in background!');
+      } else {
+        alert(res.error || 'Failed to push timestamps.');
+      }
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -1568,6 +2227,7 @@ WIDGET_HTML = """<!DOCTYPE html>
     if (!data || !data.success) return;
     lastData = data;
     stationsOrder = (data.stations || []).map(s => s.id);
+    hydratePollingAndSyncUI(data);
 
     // Check Late Alerts
     const alerts = data.late_alerts || [];
@@ -1764,10 +2424,17 @@ WIDGET_HTML = """<!DOCTYPE html>
       const rawSynop = slot.raw_synop || (slot.received ? 'SYNOP received but text unavailable.' : 'Pending observation window.');
       let timingInfo = 'Awaiting schedule';
       if (slot.received) {
-        const deltaStr = (slot.delta_minutes !== null && slot.delta_minutes !== undefined)
-          ? ` (${slot.delta_minutes >= 0 ? '+' : ''}${slot.delta_minutes}m)`
-          : '';
-        timingInfo = slot.filing_time ? `Filed ${slot.filing_time}${deltaStr}` : `Transmissions: ${slot.transmission_count}${deltaStr}`;
+        if (slot.first_seen_time) {
+          const fsDelta = (slot.first_seen_delta !== null && slot.first_seen_delta !== undefined)
+            ? ` (${slot.first_seen_delta >= 0 ? '+' : ''}${slot.first_seen_delta}m)`
+            : '';
+          timingInfo = `Seen ${slot.first_seen_time}${fsDelta}`;
+        } else {
+          const deltaStr = (slot.delta_minutes !== null && slot.delta_minutes !== undefined)
+            ? ` (${slot.delta_minutes >= 0 ? '+' : ''}${slot.delta_minutes}m)`
+            : '';
+          timingInfo = slot.filing_time ? `Filed ${slot.filing_time}${deltaStr}` : `Transmissions: ${slot.transmission_count}${deltaStr}`;
+        }
       } else if (slot.status === 'MISSING') {
         timingInfo = 'Not received within +30m SLA';
       }
@@ -1897,6 +2564,8 @@ WIDGET_HTML = """<!DOCTYPE html>
   // Python Bridge Actions
   // --------------------------------------------------------------------------
   async function loadData() {
+    const spinner = document.getElementById('activePollSpinner');
+    if (spinner) spinner.classList.add('fetching');
     if (window.pywebview && window.pywebview.api) {
       try {
         const raw = await window.pywebview.api.get_data();
@@ -1906,11 +2575,14 @@ WIDGET_HTML = """<!DOCTYPE html>
         console.error('Failed to load data:', e);
       }
     }
+    if (spinner) spinner.classList.remove('fetching');
   }
 
   async function triggerRefresh() {
     const btn = document.getElementById('btnRefresh');
+    const spinner = document.getElementById('activePollSpinner');
     btn.classList.add('rotating');
+    if (spinner) spinner.classList.add('fetching');
     scanRemainingSecs = currentScanSecs;
     if (window.pywebview && window.pywebview.api) {
       try {
@@ -1921,7 +2593,10 @@ WIDGET_HTML = """<!DOCTYPE html>
         console.error('Refresh error:', e);
       }
     }
-    setTimeout(() => btn.classList.remove('rotating'), 800);
+    setTimeout(() => {
+      btn.classList.remove('rotating');
+      if (spinner) spinner.classList.remove('fetching');
+    }, 600);
   }
 
   async function togglePin() {
@@ -1961,12 +2636,6 @@ WIDGET_HTML = """<!DOCTYPE html>
 
   // Initial load
   initSavedOpacity();
-  const savedTiming = localStorage.getItem('synop_scan_timing');
-  if (savedTiming) {
-    const s = parseInt(savedTiming, 10);
-    const lbl = s < 60 ? `${s}s` : `${Math.floor(s/60)}m`;
-    changeScanTiming(s, lbl);
-  }
 
   window.addEventListener('pywebviewready', () => {
     loadData();
