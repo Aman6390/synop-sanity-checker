@@ -26,6 +26,7 @@ A real-time meteorological GTS bulletin parser, timeliness verifier, and WMO ded
     - `Amended (COR)`: Official corrected report superseding initial transmission.
     - `Data Discrepancy`: Mismatched weather parameters requiring audit.
 - **Multi-Platform Support**:
+  - 🪟 **Windows 10/11 Desktop Floating Widget**: Frameless translucent desktop widget with live UTC/IST clocks, dynamic synoptic window countdown, station observation pills, and 1-click dashboard launch (`widget.py`).
   - 🎈 **Streamlit Cloud & Web App**: 1-click cloud deployable interactive dashboard (`streamlit_app.py`).
   - ⚡ **FastAPI + Vite React**: High-performance asynchronous backend and Apple Design-inspired client dashboard.
   - 🖥️ **Desktop Native App**: Lightweight standalone desktop window powered by `pywebview`.
@@ -62,6 +63,26 @@ Open your browser at `http://localhost:8501`.
 
 ---
 
+## 🪟 Windows 10/11 Desktop Floating Mini-Widget
+
+For shift observers and duty officers who want real-time visibility without cluttering full browser tabs:
+
+```bash
+python widget.py
+```
+**Windows Quick Launchers**:
+- **Standard Launcher**: Double-click `Launch-SYNOP-Widget.bat`
+- **Silent Background Launcher** (No terminal window): Double-click `Launch-SYNOP-Widget-Silent.vbs`
+
+**Widget Capabilities**:
+- 📌 **Always on Top Toggle**: Pin or unpin from the desktop foreground.
+- 🗕 **Glance / Compact Mode**: Collapses into a minimal clock and active window bar.
+- 🕒 **Dual UTC / IST Live Clocks**: Precision countdown to observation deadlines.
+- 🟢 **8-Slot Observation Timeline**: Live color-coded status badges per station.
+- 📊 **1-Click Web Dashboard**: Instantly opens the full Streamlit dashboard.
+
+---
+
 ## 🖥️ Alternative: Running the Full FastAPI + React Desktop Suite
 
 ### Full Development Stack (FastAPI + React)
@@ -85,6 +106,9 @@ Launch-SYNOP-App.bat
 
 ```
 synop-sanity-checker/
+├── widget.py                 # Windows 10/11 Desktop Floating Widget (Apple Design)
+├── Launch-SYNOP-Widget.bat   # Windows 1-click widget launcher
+├── Launch-SYNOP-Widget-Silent.vbs # Silent background widget launcher
 ├── streamlit_app.py          # Complete Streamlit cloud & local web app
 ├── requirements.txt          # Python dependencies
 ├── backend/
