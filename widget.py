@@ -1926,7 +1926,6 @@ WIDGET_HTML = """<!DOCTYPE html>
       </div>
       <div style="display: flex; gap: 4px;">
         <button class="btn-sort" style="flex: 1;" onclick="applySyncConfig(true)">💾 Save Sync</button>
-        <button class="btn-sort" style="flex: 1;" onclick="exportTimestampsJson()">📤 Export JSON</button>
         <button class="btn-sort" style="flex: 1;" onclick="pushTimestampsNow()">☁️ Push Now</button>
       </div>
     </div>
@@ -2194,18 +2193,6 @@ WIDGET_HTML = """<!DOCTYPE html>
       await window.pywebview.api.save_sync_config(JSON.stringify(payload));
       if (showAlert) alert('Sync settings saved!');
       triggerRefresh();
-    }
-  }
-
-  async function exportTimestampsJson() {
-    if (window.pywebview && window.pywebview.api) {
-      const res = JSON.parse(await window.pywebview.api.export_timestamps_json());
-      if (res.success) {
-        try { await navigator.clipboard.writeText(res.json_text); } catch(e) {}
-        alert(`Exported ${res.count} timestamps to:\n${res.path}\n(Also copied to clipboard!)`);
-      } else {
-        alert('Export failed: ' + (res.error || 'Unknown error'));
-      }
     }
   }
 
