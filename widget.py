@@ -196,6 +196,9 @@ class WidgetBackend:
                             "is_primary": r.get("is_primary", False)
                         })
 
+                    earliest_ht = (slot.get("earliest_report", {}) or {}).get("header_timestamp", "")
+                    filing_time = f"{earliest_ht[2:4]}:{earliest_ht[4:6]} UTC" if len(earliest_ht) >= 6 else ""
+
                     slots_data.append({
                         "hour": h,
                         "label": f"{h[:2]}Z",
@@ -207,6 +210,7 @@ class WidgetBackend:
                         "duplicate_type": slot.get("duplicate_type", "NONE"),
                         "duplicate_badge": slot.get("duplicate_badge", ""),
                         "delta_minutes": slot.get("delta_minutes"),
+                        "filing_time": filing_time,
                         "raw_synop": slot.get("authoritative_synop", {}).get("raw_text", "") or (slot.get("primary_report", {}) or {}).get("raw_text", ""),
                         "reports": reports_list
                     })
@@ -1601,20 +1605,14 @@ WIDGET_HTML = """<!DOCTYPE html>
       let dotsHtml = '';
 
       slots.forEach(slot => {
-        if (slot.status === 'ON_TIME') {
-          onTimeCount++; expectedCount++;
-          dotsHtml += `<span class="mini-slot ms-on-time" title="${slot.hour.slice(0,2)}Z: ${slot.badge_text}"></span>`;
-        } else if (slot.status === 'EARLY') {
-          earlyCount++; expectedCount++;
-          dotsHtml += `<span class="mini-slot ms-early" title="${slot.hour.slice(0,2)}Z: ${slot.badge_text}"></span>`;
-        } else if (slot.status === 'LATE' || slot.status === 'VERY_LATE') {
-          lateCount++; expectedCount++;
-          dotsHtml += `<span class="mini-slot ms-late" title="${slot.hour.slice(0,2)}Z: ${slot.badge_text}"></span>`;
-        } else if (slot.status === 'MISSING') {
-          missingCount++; expectedCount++;
-          dotsHtml += `<span class="mini-slot ms-missing" title="${slot.hour.slice(0,2)}Z: ${slot.badge_text}"></span>`;
-        }
-        // Skip AWAITING (future windows) and NOT_SCHEDULED so completed stations show zero empty boxes
+        let dotCls = 'ms-awaiting';
+        if (slot.status === 'ON_TIME') { onTimeCount++; expectedCount++; dotCls = 'ms-on-time'; }
+        else if (slot.status === 'EARLY') { earlyCount++; expectedCount++; dotCls = 'ms-early'; }
+        else if (slot.status === 'LATE' || slot.status === 'VERY_LATE' || slot.status === 'LATE_OVERDUE') { lateCount++; expectedCount++; dotCls = 'ms-late'; }
+        else if (slot.status === 'MISSING') { missingCount++; expectedCount++; dotCls = 'ms-missing'; }
+        else if (slot.status === 'NOT_SCHEDULED') { dotCls = 'ms-not-scheduled'; }
+
+        dotsHtml += `<span class="mini-slot ${dotCls}" title="${slot.hour.slice(0,2)}Z: ${slot.badge_text}"></span>`;
       });
 
       let boxCls = 'box-ok';
@@ -1764,6 +1762,15 @@ WIDGET_HTML = """<!DOCTYPE html>
 
       const transLabel = slot.duplicate_badge || (slot.transmission_count > 1 ? `Collective Echo (${slot.transmission_count})` : 'Single Transmission');
       const rawSynop = slot.raw_synop || (slot.received ? 'SYNOP received but text unavailable.' : 'Pending observation window.');
+      let timingInfo = 'Awaiting schedule';
+      if (slot.received) {
+        const deltaStr = (slot.delta_minutes !== null && slot.delta_minutes !== undefined)
+          ? ` (${slot.delta_minutes >= 0 ? '+' : ''}${slot.delta_minutes}m)`
+          : '';
+        timingInfo = slot.filing_time ? `Filed ${slot.filing_time}${deltaStr}` : `Transmissions: ${slot.transmission_count}${deltaStr}`;
+      } else if (slot.status === 'MISSING') {
+        timingInfo = 'Not received within +30m SLA';
+      }
 
       feedHtml += `
         <div class="feed-card ${cardClass}">
@@ -1775,7 +1782,7 @@ WIDGET_HTML = """<!DOCTYPE html>
             <span class="feed-status-badge ${badgeClass}">${slot.badge_text}</span>
           </div>
           <div class="feed-meta-row">
-            <span>${slot.received ? `Transmissions: ${slot.transmission_count}` : 'Awaiting schedule'}</span>
+            <span>${timingInfo}</span>
             <span style="color: var(--accent-sky); font-weight: 600;">${transLabel}</span>
           </div>
           <div class="feed-raw-text">${rawSynop}</div>
