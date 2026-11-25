@@ -21,7 +21,7 @@ import threading
 import subprocess
 import webbrowser
 import ctypes
-from ctypes import windll
+from ctypes import windll, wintypes
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Any, Optional
 
@@ -273,6 +273,19 @@ HWND_NOTOPMOST = -2
 SW_MINIMIZE = 6
 WM_CLOSE = 0x0010
 
+# Define 64-bit safe SetWindowPos signature so HWND_TOPMOST (-1) / HWND_NOTOPMOST (-2) work properly
+_SetWindowPos = windll.user32.SetWindowPos
+_SetWindowPos.argtypes = [
+    wintypes.HWND,
+    wintypes.HWND,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_uint,
+]
+_SetWindowPos.restype = wintypes.BOOL
+
 _widget_window: Optional[webview.Window] = None
 
 
@@ -331,13 +344,27 @@ class WidgetAPI:
     def toggle_pin(self) -> bool:
         """Toggles always-on-top behavior asynchronously without blocking the UI thread."""
         self.is_pinned = not self.is_pinned
+        pinned = self.is_pinned
+
+        # 1. Update WinForms Form.TopMost asynchronously on the WinForms UI thread (no deadlock)
+        if _widget_window:
+            try:
+                import webview.platforms.winforms as wf
+                from System import Action
+                inst = wf.BrowserView.instances.get(_widget_window.uid)
+                if inst:
+                    inst.BeginInvoke(Action(lambda: setattr(inst, "TopMost", pinned)))
+            except Exception as e:
+                logger.warning(f"WinForms BeginInvoke TopMost error: {e}")
+
+        # 2. Also apply 64-bit safe Win32 SetWindowPos asynchronously
         hwnd = get_widget_hwnd()
         if hwnd:
             try:
-                target = HWND_TOPMOST if self.is_pinned else HWND_NOTOPMOST
+                target = HWND_TOPMOST if pinned else HWND_NOTOPMOST
                 flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS
                 threading.Thread(
-                    target=windll.user32.SetWindowPos,
+                    target=_SetWindowPos,
                     args=(hwnd, target, 0, 0, 0, 0, flags),
                     daemon=True,
                 ).start()
@@ -1273,7 +1300,10 @@ WIDGET_HTML = """<!DOCTYPE html>
   <!-- Alert Banner (shown when a station sends late synop) -->
   <div class="alert-banner" id="alertBanner" onclick="onAlertBannerClick()">
     <span id="alertBannerText">⚠️ Late Synop Detected</span>
-    <span>Inspect ›</span>
+    <div style="display: flex; align-items: center; gap: 6px;">
+      <button onclick="acknowledgeAlert(event)" style="background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.35); color: #fff; border-radius: 4px; padding: 1px 6px; font-size: 0.62rem; font-weight: 700; cursor: pointer;" title="Silence alert tone">OK</button>
+      <span>Inspect ›</span>
+    </div>
   </div>
 
   <!-- 1. ZERO-SCROLL BOX GRID VIEW -->
@@ -1423,8 +1453,12 @@ WIDGET_HTML = """<!DOCTYPE html>
   updateClocks();
 
   // --------------------------------------------------------------------------
-  // Web Audio Synthesizer (Acoustic Chime for Late Synops)
+  // Web Audio Synthesizer (Continuous Chime Until Acknowledged)
   // --------------------------------------------------------------------------
+  let alertLoopInterval = null;
+  let currentAlertSig = null;
+  let acknowledgedAlertSig = null;
+
   function playAlertSound() {
     if (!isSoundEnabled) return;
     try {
@@ -1434,7 +1468,7 @@ WIDGET_HTML = """<!DOCTYPE html>
       osc.type = 'sine';
       osc.frequency.setValueAtTime(587.33, audioCtx.currentTime); // D5
       osc.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + 0.15); // A5
-      gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+      gain.gain.setValueAtTime(0.22, audioCtx.currentTime);
       gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.45);
       osc.connect(gain);
       gain.connect(audioCtx.destination);
@@ -1443,6 +1477,32 @@ WIDGET_HTML = """<!DOCTYPE html>
     } catch(e) {
       console.warn('Audio synthesis unavailable:', e);
     }
+  }
+
+  function startContinuousAlert() {
+    if (!isSoundEnabled) return;
+    if (alertLoopInterval) return; // already ringing
+    playAlertSound();
+    alertLoopInterval = setInterval(() => {
+      if (!isSoundEnabled || currentAlertSig === acknowledgedAlertSig) {
+        stopContinuousAlert();
+        return;
+      }
+      playAlertSound();
+    }, 2500);
+  }
+
+  function stopContinuousAlert() {
+    if (alertLoopInterval) {
+      clearInterval(alertLoopInterval);
+      alertLoopInterval = null;
+    }
+  }
+
+  function acknowledgeAlert(e) {
+    if (e) e.stopPropagation();
+    acknowledgedAlertSig = currentAlertSig;
+    stopContinuousAlert();
   }
 
   function testAlertSound() {
@@ -1456,10 +1516,14 @@ WIDGET_HTML = """<!DOCTYPE html>
       btn.innerText = '🔔';
       btn.classList.add('alert-on');
       btn.title = 'Late Synop Audio Alert: ON';
+      if (currentAlertSig && currentAlertSig !== acknowledgedAlertSig) {
+        startContinuousAlert();
+      }
     } else {
       btn.innerText = '🔕';
       btn.classList.remove('alert-on');
       btn.title = 'Late Synop Audio Alert: MUTED';
+      stopContinuousAlert();
     }
     localStorage.setItem('synop_sound_alert', isSoundEnabled ? '1' : '0');
   }
@@ -1508,10 +1572,16 @@ WIDGET_HTML = """<!DOCTYPE html>
 
     if (alerts.length > 0) {
       const topAlert = alerts[0];
+      currentAlertSig = alerts.map(a => `${a.station_id}:${a.hour}:${a.status}`).join('|');
       bannerText.innerText = `⚠️ ${topAlert.station_name} sent Late Synop (${topAlert.hour.slice(0,2)}Z)`;
       banner.classList.add('show');
-      playAlertSound();
+      if (currentAlertSig !== acknowledgedAlertSig) {
+        startContinuousAlert();
+      }
     } else {
+      currentAlertSig = null;
+      acknowledgedAlertSig = null;
+      stopContinuousAlert();
       banner.classList.remove('show');
     }
 
@@ -1531,14 +1601,20 @@ WIDGET_HTML = """<!DOCTYPE html>
       let dotsHtml = '';
 
       slots.forEach(slot => {
-        let dotCls = 'ms-awaiting';
-        if (slot.status === 'ON_TIME') { onTimeCount++; expectedCount++; dotCls = 'ms-on-time'; }
-        else if (slot.status === 'EARLY') { earlyCount++; expectedCount++; dotCls = 'ms-early'; }
-        else if (slot.status === 'LATE' || slot.status === 'VERY_LATE') { lateCount++; expectedCount++; dotCls = 'ms-late'; }
-        else if (slot.status === 'MISSING') { missingCount++; expectedCount++; dotCls = 'ms-missing'; }
-        else if (slot.status === 'NOT_SCHEDULED') { dotCls = 'ms-not-scheduled'; }
-
-        dotsHtml += `<span class="mini-slot ${dotCls}" title="${slot.hour.slice(0,2)}Z: ${slot.badge_text}"></span>`;
+        if (slot.status === 'ON_TIME') {
+          onTimeCount++; expectedCount++;
+          dotsHtml += `<span class="mini-slot ms-on-time" title="${slot.hour.slice(0,2)}Z: ${slot.badge_text}"></span>`;
+        } else if (slot.status === 'EARLY') {
+          earlyCount++; expectedCount++;
+          dotsHtml += `<span class="mini-slot ms-early" title="${slot.hour.slice(0,2)}Z: ${slot.badge_text}"></span>`;
+        } else if (slot.status === 'LATE' || slot.status === 'VERY_LATE') {
+          lateCount++; expectedCount++;
+          dotsHtml += `<span class="mini-slot ms-late" title="${slot.hour.slice(0,2)}Z: ${slot.badge_text}"></span>`;
+        } else if (slot.status === 'MISSING') {
+          missingCount++; expectedCount++;
+          dotsHtml += `<span class="mini-slot ms-missing" title="${slot.hour.slice(0,2)}Z: ${slot.badge_text}"></span>`;
+        }
+        // Skip AWAITING (future windows) and NOT_SCHEDULED so completed stations show zero empty boxes
       });
 
       let boxCls = 'box-ok';
@@ -1621,6 +1697,7 @@ WIDGET_HTML = """<!DOCTYPE html>
   }
 
   function onAlertBannerClick() {
+    acknowledgeAlert();
     if (lastData && lastData.late_alerts && lastData.late_alerts.length > 0) {
       openDrilldown(lastData.late_alerts[0].station_id);
     }
