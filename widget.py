@@ -10,8 +10,11 @@ import sys
 import json
 import socket
 import logging
+import threading
 import subprocess
 import webbrowser
+import ctypes
+from ctypes import windll
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Any, Optional
 
@@ -162,19 +165,51 @@ class WidgetBackend:
 backend_instance = WidgetBackend()
 
 
+# Win32 Window Positioning Constants
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_NOZORDER = 0x0004
+SWP_NOACTIVATE = 0x0010
+SWP_ASYNCWINDOWPOS = 0x4000
+HWND_TOPMOST = -1
+HWND_NOTOPMOST = -2
+SW_MINIMIZE = 6
+WM_CLOSE = 0x0010
+
+# Global reference to widget window (kept outside WidgetAPI to avoid circular COM/WinForms introspection)
+_widget_window: Optional[webview.Window] = None
+
+
+def get_widget_hwnd() -> int:
+    """Retrieve Win32 HWND safely for asynchronous window operations."""
+    global _widget_window
+    if _widget_window:
+        try:
+            import webview.platforms.winforms as wf
+            inst = wf.BrowserView.instances.get(_widget_window.uid)
+            if inst:
+                return int(inst.Handle.ToInt64())
+        except Exception:
+            pass
+    try:
+        import ctypes
+        hwnd = ctypes.windll.user32.FindWindowW(None, "IMD SYNOP SLA Widget")
+        if hwnd:
+            return hwnd
+    except Exception:
+        pass
+    return 0
+
+
 class WidgetAPI:
     """JS API exposed to the frontend inside pywebview."""
 
     def __init__(self):
-        self.window: Optional[webview.Window] = None
         self.is_pinned: bool = True
         self.is_compact: bool = False
         self.full_height: int = 420
         self.compact_height: int = 85
         self.width: int = 370
-
-    def set_window(self, win: webview.Window):
-        self.window = win
 
     def get_data(self) -> str:
         """Called by Javascript on initialization and periodic refresh."""
@@ -190,26 +225,44 @@ class WidgetAPI:
         return self.get_data()
 
     def toggle_pin(self) -> bool:
-        """Toggles always-on-top behavior."""
-        if not self.window:
-            return self.is_pinned
+        """Toggles always-on-top behavior asynchronously without blocking the UI thread."""
         self.is_pinned = not self.is_pinned
-        try:
-            self.window.on_top = self.is_pinned
-        except Exception as e:
-            logger.warning(f"Could not set on_top property: {e}")
+        hwnd = get_widget_hwnd()
+        if hwnd:
+            try:
+                import ctypes
+                target = HWND_TOPMOST if self.is_pinned else HWND_NOTOPMOST
+                flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS
+                threading.Thread(
+                    target=ctypes.windll.user32.SetWindowPos,
+                    args=(hwnd, target, 0, 0, 0, 0, flags),
+                    daemon=True,
+                ).start()
+            except Exception as e:
+                logger.warning(f"Win32 SetWindowPos error: {e}")
         return self.is_pinned
 
     def toggle_compact(self) -> bool:
         """Toggles between full station view and compact single-bar glance view."""
-        if not self.window:
-            return self.is_compact
         self.is_compact = not self.is_compact
         target_height = self.compact_height if self.is_compact else self.full_height
-        try:
-            self.window.resize(self.width, target_height)
-        except Exception as e:
-            logger.warning(f"Could not resize window: {e}")
+        hwnd = get_widget_hwnd()
+        if hwnd:
+            try:
+                import ctypes
+                flags = SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS
+                threading.Thread(
+                    target=ctypes.windll.user32.SetWindowPos,
+                    args=(hwnd, 0, 0, 0, self.width, target_height, flags),
+                    daemon=True,
+                ).start()
+            except Exception as e:
+                logger.warning(f"Win32 resize error: {e}")
+        elif _widget_window:
+            try:
+                _widget_window.resize(self.width, target_height)
+            except Exception:
+                pass
         return self.is_compact
 
     def open_dashboard(self) -> str:
@@ -226,12 +279,25 @@ class WidgetAPI:
         return "opened"
 
     def minimize(self) -> None:
-        if self.window:
-            self.window.minimize()
+        hwnd = get_widget_hwnd()
+        if hwnd:
+            try:
+                import ctypes
+                threading.Thread(
+                    target=ctypes.windll.user32.ShowWindow,
+                    args=(hwnd, SW_MINIMIZE),
+                    daemon=True,
+                ).start()
+            except Exception:
+                if _widget_window:
+                    _widget_window.minimize()
+        elif _widget_window:
+            _widget_window.minimize()
 
     def close(self) -> None:
-        if self.window:
-            self.window.destroy()
+        global _widget_window
+        if _widget_window:
+            threading.Timer(0.1, _widget_window.destroy).start()
 
 
 # -----------------------------------------------------------------------------
@@ -790,6 +856,7 @@ WIDGET_HTML = """<!DOCTYPE html>
 
 
 def main():
+    global _widget_window
     api = WidgetAPI()
     screen_width, screen_height = 1920, 1080
     if webview.screens:
@@ -802,7 +869,7 @@ def main():
     pos_x = max(20, screen_width - widget_w - 24)
     pos_y = max(20, screen_height - widget_h - 54)
 
-    window = webview.create_window(
+    _widget_window = webview.create_window(
         title="IMD SYNOP SLA Widget",
         html=WIDGET_HTML,
         js_api=api,
@@ -818,7 +885,6 @@ def main():
         transparent=True,
         background_color="#0F172A",
     )
-    api.set_window(window)
     webview.start(debug=False)
 
 
