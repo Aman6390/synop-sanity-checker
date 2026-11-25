@@ -27,9 +27,16 @@ from typing import Dict, List, Any, Optional
 
 import webview
 
-# Ensure backend directory is in path
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-BACKEND_DIR = os.path.join(BASE_DIR, "backend")
+# Ensure backend directory is in path and support PyInstaller frozen bundles
+if getattr(sys, "frozen", False):
+    BUNDLE_DIR = sys._MEIPASS
+    EXE_DIR = os.path.dirname(sys.executable)
+else:
+    BUNDLE_DIR = os.path.dirname(os.path.abspath(__file__))
+    EXE_DIR = BUNDLE_DIR
+
+BASE_DIR = BUNDLE_DIR
+BACKEND_DIR = os.path.join(BUNDLE_DIR, "backend")
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
@@ -42,8 +49,30 @@ from sla_engine import (
     HOUR_LABELS,
 )
 
-CONFIG_PATH = os.path.join(BACKEND_DIR, "stations_config.json")
-DUMP_PATH = os.path.join(BASE_DIR, "sendata_dump.txt")
+DEFAULT_CONFIG_PATH = os.path.join(BACKEND_DIR, "stations_config.json")
+
+
+def get_user_config_path() -> str:
+    app_data = os.environ.get("APPDATA")
+    if app_data:
+        user_dir = os.path.join(app_data, "IMD_SYNOP")
+        try:
+            os.makedirs(user_dir, exist_ok=True)
+            return os.path.join(user_dir, "stations_config.json")
+        except Exception:
+            pass
+    return os.path.join(EXE_DIR, "stations_config.json")
+
+
+def get_dump_path() -> str:
+    exe_dump = os.path.join(EXE_DIR, "sendata_dump.txt")
+    if os.path.exists(exe_dump):
+        return exe_dump
+    return os.path.join(BUNDLE_DIR, "sendata_dump.txt")
+
+
+CONFIG_PATH = get_user_config_path()
+DUMP_PATH = get_dump_path()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("SYNOPWidget")
@@ -68,12 +97,19 @@ class WidgetBackend:
         self.fetcher = AMSSFetcher()
 
     def load_stations_config(self) -> List[Dict[str, Any]]:
-        if os.path.exists(CONFIG_PATH):
+        target_path = CONFIG_PATH if os.path.exists(CONFIG_PATH) else DEFAULT_CONFIG_PATH
+        if os.path.exists(target_path):
             try:
-                with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                with open(target_path, "r", encoding="utf-8") as f:
                     return json.load(f).get("stations", [])
             except Exception as e:
-                logger.error(f"Error loading stations config: {e}")
+                logger.error(f"Error loading stations config from {target_path}: {e}")
+        if target_path != DEFAULT_CONFIG_PATH and os.path.exists(DEFAULT_CONFIG_PATH):
+            try:
+                with open(DEFAULT_CONFIG_PATH, "r", encoding="utf-8") as f:
+                    return json.load(f).get("stations", [])
+            except Exception as e:
+                logger.error(f"Error loading fallback stations config: {e}")
         return []
 
     def reorder_stations(self, new_order_ids: List[str]) -> bool:
@@ -88,9 +124,11 @@ class WidgetBackend:
             if s not in reordered:
                 reordered.append(s)
         try:
-            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            target_path = get_user_config_path()
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            with open(target_path, "w", encoding="utf-8") as f:
                 json.dump({"stations": reordered}, f, indent=2)
-            logger.info("Successfully persisted reordered stations.")
+            logger.info(f"Successfully persisted reordered stations to {target_path}.")
             return True
         except Exception as e:
             logger.error(f"Error saving reordered stations: {e}")
@@ -103,8 +141,9 @@ class WidgetBackend:
             raw_text = self.fetcher.fetch_live_data()
         except Exception as e:
             logger.warning(f"Live fetch failed ({e}), falling back to local dump...")
-            if os.path.exists(DUMP_PATH):
-                with open(DUMP_PATH, "r", encoding="utf-8", errors="ignore") as f:
+            dump_file = get_dump_path()
+            if os.path.exists(dump_file):
+                with open(dump_file, "r", encoding="utf-8", errors="ignore") as f:
                     raw_text = f.read()
                 source = "Local GTS Dump (Backup)"
             else:
@@ -334,9 +373,18 @@ class WidgetAPI:
         url = f"http://localhost:{streamlit_port}"
 
         if not is_port_active(streamlit_port):
-            logger.info("Streamlit server not detected on port 8501. Launching in background...")
-            cmd = [sys.executable, "-m", "streamlit", "run", "streamlit_app.py", "--server.port", str(streamlit_port), "--server.headless", "true"]
-            subprocess.Popen(cmd, cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            py_exec = "python" if getattr(sys, "frozen", False) else sys.executable
+            app_script = os.path.join(EXE_DIR, "streamlit_app.py")
+            if not os.path.exists(app_script):
+                app_script = os.path.join(BASE_DIR, "streamlit_app.py")
+
+            if os.path.exists(app_script):
+                logger.info("Streamlit server not detected on port 8501. Launching in background...")
+                try:
+                    cmd = [py_exec, "-m", "streamlit", "run", app_script, "--server.port", str(streamlit_port), "--server.headless", "true"]
+                    subprocess.Popen(cmd, cwd=EXE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+                except Exception as e:
+                    logger.warning(f"Could not launch streamlit subprocess: {e}")
 
         webbrowser.open(url)
         return "opened"
