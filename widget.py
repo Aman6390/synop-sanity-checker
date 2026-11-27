@@ -23,6 +23,10 @@ import subprocess
 import webbrowser
 import ctypes
 from ctypes import windll, wintypes
+if os.name == "nt":
+    import winreg
+else:
+    winreg = None
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Any, Optional
 
@@ -574,6 +578,7 @@ class WidgetBackend:
                 "last_fetch_iso": now_utc.isoformat(),
                 "window_status": window_status,
                 "polling_settings": polling_settings,
+                "startup_enabled": is_startup_enabled(),
                 "sync_info": {
                     "enabled": sync_cfg.get("enabled", True),
                     "read_url": sync_cfg.get("read_url", ""),
@@ -633,6 +638,51 @@ _SetWindowPos.argtypes = [
 _SetWindowPos.restype = wintypes.BOOL
 
 _widget_window: Optional[webview.Window] = None
+
+
+STARTUP_REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
+STARTUP_APP_NAME = "IMDSynopWidget"
+
+
+def get_startup_command() -> str:
+    """Returns the command line to launch this widget at Windows login."""
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}"'
+    pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+    exe = pythonw if os.path.exists(pythonw) else sys.executable
+    return f'"{exe}" "{os.path.abspath(__file__)}"'
+
+
+def is_startup_enabled() -> bool:
+    if os.name != "nt" or winreg is None:
+        return False
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_REG_PATH, 0, winreg.KEY_READ) as key:
+            val, _ = winreg.QueryValueEx(key, STARTUP_APP_NAME)
+            return bool(val)
+    except FileNotFoundError:
+        return False
+    except Exception as e:
+        logger.warning(f"Error checking startup registry key: {e}")
+        return False
+
+
+def set_startup_enabled(enabled: bool) -> bool:
+    if os.name != "nt" or winreg is None:
+        return False
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_REG_PATH, 0, winreg.KEY_SET_VALUE) as key:
+            if enabled:
+                winreg.SetValueEx(key, STARTUP_APP_NAME, 0, winreg.REG_SZ, get_startup_command())
+            else:
+                try:
+                    winreg.DeleteValue(key, STARTUP_APP_NAME)
+                except FileNotFoundError:
+                    pass
+        return True
+    except Exception as e:
+        logger.error(f"Error updating startup registry key: {e}")
+        return False
 
 
 def get_widget_hwnd() -> int:
@@ -734,6 +784,15 @@ class WidgetAPI:
             return json.dumps({"success": True})
         except Exception as e:
             return json.dumps({"success": False, "error": str(e)})
+
+    def get_startup_status(self) -> bool:
+        """Checks whether the widget is registered to start at Windows boot."""
+        return is_startup_enabled()
+
+    def set_startup_enabled(self, enabled: bool) -> str:
+        """Enables or disables launching the widget at Windows boot."""
+        ok = set_startup_enabled(bool(enabled))
+        return json.dumps({"success": ok, "enabled": is_startup_enabled()})
 
     def toggle_pin(self) -> bool:
         """Toggles always-on-top behavior asynchronously without blocking the UI thread."""
@@ -1941,6 +2000,18 @@ WIDGET_HTML = """<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- Windows Boot Startup Setting -->
+    <div class="setting-group">
+      <div class="setting-label-row">
+        <span>Start at Windows Boot</span>
+        <span class="setting-val-tag" id="startupStatusTag">Disabled</span>
+      </div>
+      <label class="setting-check-row" style="margin-top: 2px;">
+        <span>Launch widget automatically on login</span>
+        <input type="checkbox" id="cfgStartAtBoot" onchange="toggleStartAtBoot(this.checked)">
+      </label>
+    </div>
+
     <!-- Station Re-structuring -->
     <div class="setting-group">
       <div class="setting-label-row">
@@ -2142,6 +2213,31 @@ WIDGET_HTML = """<!DOCTYPE html>
       if (si.read_url !== undefined) document.getElementById('cfgReadUrl').value = si.read_url || '';
       if (si.publish_url !== undefined) document.getElementById('cfgPublishUrl').value = si.publish_url || '';
       document.getElementById('syncCountTag').innerText = `${si.recorded_count || 0} saved`;
+    }
+
+    // Hydrate Startup Setting
+    if (data.startup_enabled !== undefined && document.getElementById('cfgStartAtBoot')) {
+      const enabled = Boolean(data.startup_enabled);
+      document.getElementById('cfgStartAtBoot').checked = enabled;
+      const tag = document.getElementById('startupStatusTag');
+      if (tag) tag.innerText = enabled ? 'Enabled' : 'Disabled';
+    }
+  }
+
+  async function toggleStartAtBoot(enabled) {
+    const tag = document.getElementById('startupStatusTag');
+    if (window.pywebview && window.pywebview.api) {
+      try {
+        const res = JSON.parse(await window.pywebview.api.set_startup_enabled(Boolean(enabled)));
+        const actual = Boolean(res.enabled);
+        document.getElementById('cfgStartAtBoot').checked = actual;
+        if (tag) tag.innerText = actual ? 'Enabled' : 'Disabled';
+        if (!res.success) {
+          alert('Could not update Windows Startup registry setting.');
+        }
+      } catch (e) {
+        console.error('Startup toggle error:', e);
+      }
     }
   }
 
